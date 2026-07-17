@@ -2,3 +2,6 @@
 
 # kiln-dashboard is its own separate git repository, not part of this one.
 /kiln-dashboard
+
+# Claude Code's own local session state, not project content.
+/.claude

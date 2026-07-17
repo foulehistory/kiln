@@ -1,2 +1,2 @@
 @echo off
-wsl -d Ubuntu -u root -e /mnt/e/kiln/target/debug/kiln %*
+wsl -d Ubuntu -u root -e /mnt/e/kiln/bin/kiln-launch.sh kiln %*
