@@ -1,0 +1,44 @@
+name: release
+
+# Triggered by pushing a tag like "v0.2.0". Builds release binaries for
+# kiln, kiln-compose, and kilnd on a real Linux runner (kilnd needs
+# namespaces/cgroups at *build* time not at all - only at run time - so an
+# ordinary ubuntu-latest runner is enough here) and attaches them to a
+# GitHub Release. This is what kiln-dashboard's "check for updates" feature
+# compares its own kilnd's `/version` against and downloads from.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p kiln-cli -p kiln-compose -p kilnd
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/release/kiln dist/kiln
+          cp target/release/kiln-compose dist/kiln-compose
+          cp target/release/kilnd dist/kilnd
+          tar -C dist -czf kiln-linux-x86_64.tar.gz kiln kiln-compose kilnd
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kiln-linux-x86_64.tar.gz
+          generate_release_notes: true
