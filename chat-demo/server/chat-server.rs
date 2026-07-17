@@ -22,7 +22,21 @@ fn broadcast(clients: &Clients, from: &str, message: &str) {
     clients.retain_mut(|(_, stream)| stream.write_all(line.as_bytes()).is_ok());
 }
 
+// Logged to stdout, which kilnd captures into the container's log file
+// (`kiln logs`, and the dashboard's log panel) the same as anything else
+// the container prints - explicit `.flush()` because Rust's stdout is
+// only *line*-buffered when it detects a real terminal; redirected to a
+// file (what it always is here), it's fully buffered by default, so
+// without this a connect/disconnect line could sit unflushed for a long
+// time instead of showing up promptly.
+fn log(message: &str) {
+    println!("{message}");
+    let _ = std::io::stdout().flush();
+}
+
 fn handle_client(stream: TcpStream, clients: Clients) {
+    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+
     let mut writer = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -42,6 +56,7 @@ fn handle_client(stream: TcpStream, clients: Clients) {
         let Ok(handle) = reader.get_ref().try_clone() else { return };
         list.push((name.clone(), handle));
     }
+    log(&format!("+ {name} connected ({peer})"));
     broadcast(&clients, "server", &format!("{name} joined the chat"));
 
     loop {
@@ -58,13 +73,14 @@ fn handle_client(stream: TcpStream, clients: Clients) {
     }
 
     clients.lock().unwrap().retain(|(n, _)| n != &name);
+    log(&format!("- {name} disconnected ({peer})"));
     broadcast(&clients, "server", &format!("{name} left the chat"));
 }
 
 fn main() {
     let port: u16 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(6667);
     let listener = TcpListener::bind(("0.0.0.0", port)).expect("bind");
-    println!("kiln-chat listening on :{port}");
+    log(&format!("kiln-chat listening on :{port}"));
 
     let clients: Clients = Arc::new(Mutex::new(Vec::new()));
     for stream in listener.incoming().flatten() {

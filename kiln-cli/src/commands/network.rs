@@ -287,10 +287,23 @@ pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
                 let (Ok(mut c1), Ok(mut u1)) = (client.try_clone(), upstream.try_clone()) else { return };
                 let pump_in = std::thread::spawn(move || {
                     let _ = std::io::copy(&mut c1, &mut u1);
+                    // `u1` is a dup'd fd sharing the same socket as `u2`
+                    // below (still in use for the other direction), so
+                    // just dropping it here sends no FIN - the upstream
+                    // (the container's own service) would never see the
+                    // client go away, leaving its side of the connection
+                    // stuck open forever. An explicit half-close is what
+                    // actually propagates "no more data is coming from
+                    // the client" to it.
+                    let _ = u1.shutdown(std::net::Shutdown::Write);
                 });
                 let mut c2 = client;
                 let mut u2 = upstream;
                 let _ = std::io::copy(&mut u2, &mut c2);
+                // Same reasoning in the other direction: once the
+                // upstream has no more data to send, tell the original
+                // client so, instead of leaving its read half hanging.
+                let _ = c2.shutdown(std::net::Shutdown::Write);
                 let _ = pump_in.join();
             });
         }
