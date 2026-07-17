@@ -1,0 +1,4 @@
+FROM base:latest
+COPY bin/chat-server /usr/local/bin/chat-server
+EXPOSE 6667
+CMD /usr/local/bin/chat-server 6667
