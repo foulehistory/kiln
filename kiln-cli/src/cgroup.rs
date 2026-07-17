@@ -1,14 +1,11 @@
 //! Where every `kiln run` container's cgroup lives, and small helpers for
 //! reading the live stats `kilnd`'s dashboard API exposes.
 //!
-//! `kiln run` itself applies no hard limits by default (matching Docker's
-//! own unlimited-by-default behavior) - the point of always creating a
-//! cgroup, even an unrestricted one, is that `memory.current`/`cpu.stat`
-//! become readable immediately, which is what live "CPU/RAM" dashboard
-//! views need. Real limits (`--memory`, `--cpus`) are a natural follow-up
-//! that would just pass a non-default `Limits` into [`CgroupV2::create`]
-//! here - the plumbing already supports it, `kiln run` just doesn't
-//! expose the flags yet.
+//! `kiln run` applies no hard limits unless `--memory`/`--cpus` are given
+//! (matching Docker's own unlimited-by-default behavior) - the point of
+//! always creating a cgroup, even an unrestricted one, is that
+//! `memory.current`/`cpu.stat` become readable immediately, which is what
+//! live "CPU/RAM" dashboard views need.
 
 use kilnd_core::cgroups::{ensure_delegated_root, CgroupV2, Limits};
 use kilnd_core::Result;
@@ -20,9 +17,9 @@ pub fn root_dir() -> Result<PathBuf> {
     ensure_delegated_root(Path::new(MOUNT_ROOT), "kiln")
 }
 
-pub fn create_for(container_id: &str) -> Result<CgroupV2> {
+pub fn create_for(container_id: &str, limits: &Limits) -> Result<CgroupV2> {
     let root = root_dir()?;
-    CgroupV2::create(&root, container_id, &Limits::default())
+    CgroupV2::create(&root, container_id, limits)
 }
 
 pub fn open(container_id: &str) -> Option<PathBuf> {

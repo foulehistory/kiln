@@ -1,7 +1,9 @@
 pub mod build;
+pub mod cp;
 pub mod exec;
 pub mod gc;
 pub mod images;
+pub mod inspect;
 pub mod logs;
 pub mod network;
 pub mod ps;
@@ -12,6 +14,7 @@ pub mod rmi;
 pub mod run;
 pub mod start;
 pub mod stop;
+pub mod top;
 pub mod volume;
 
 use kiln_image::store::Store;

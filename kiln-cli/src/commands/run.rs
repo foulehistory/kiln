@@ -13,7 +13,7 @@
 //! `kiln run` calls [`wait_and_stream`] to tail that same log file to the
 //! terminal and block until the container exits.
 
-use crate::container::{generate_id, now_unix, Container, Status};
+use crate::container::{generate_id, now_unix, Container, RestartPolicy, Status};
 use crate::error::{CliError, CliResult};
 use crate::supervisor;
 use kiln_image::identity;
@@ -47,6 +47,22 @@ pub struct Args {
     #[arg(long)]
     pub network: Option<String>,
 
+    /// Publish a container port to the host, as `<host>:<container>[/tcp|udp]` (requires --network)
+    #[arg(short = 'p', long = "publish")]
+    pub ports: Vec<String>,
+
+    /// Memory limit, e.g. `512m`, `1g`, or a plain byte count (unlimited by default)
+    #[arg(long)]
+    pub memory: Option<String>,
+
+    /// CPU limit in number of CPUs, e.g. `0.5` or `2` (unlimited by default)
+    #[arg(long)]
+    pub cpus: Option<f64>,
+
+    /// Restart policy: `no` (default), `always`, or `on-failure`
+    #[arg(long, default_value = "no")]
+    pub restart: String,
+
     /// Image reference (name[:tag], a bare content hash, or "scratch")
     pub image: String,
 
@@ -55,7 +71,27 @@ pub struct Args {
     pub command: Vec<String>,
 }
 
+/// Parse a Docker-style size string (`512m`, `1g`, `1024k`, or a bare byte
+/// count) into bytes.
+pub fn parse_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (digits, multiplier) = match s.chars().last() {
+        Some(c) if c.eq_ignore_ascii_case(&'k') => (&s[..s.len() - 1], 1024u64),
+        Some(c) if c.eq_ignore_ascii_case(&'m') => (&s[..s.len() - 1], 1024 * 1024),
+        Some(c) if c.eq_ignore_ascii_case(&'g') => (&s[..s.len() - 1], 1024 * 1024 * 1024),
+        _ => (s, 1),
+    };
+    digits
+        .trim()
+        .parse::<u64>()
+        .map(|n| n * multiplier)
+        .map_err(|_| format!("invalid size {s:?} (expected e.g. 512m, 1g, or a plain byte count)"))
+}
+
 pub fn run(store: &Store, args: Args) -> CliResult {
+    let memory_limit_bytes = args.memory.map(|s| parse_size(&s)).transpose().map_err(CliError::msg)?;
+    let restart_policy = RestartPolicy::parse(&args.restart).map_err(CliError::msg)?;
+
     let spec = RunSpec {
         image: args.image,
         command: args.command,
@@ -64,6 +100,10 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         network: args.network,
         extra_env: Vec::new(),
         extra_hosts: Vec::new(),
+        memory_limit_bytes,
+        cpu_limit: args.cpus,
+        ports: args.ports,
+        restart_policy,
     };
 
     let container = start(store, spec, None)?;
@@ -93,6 +133,13 @@ pub struct RunSpec {
     /// dependent service starts - see `kiln-compose`'s module docs for
     /// the (deliberately modest) scope of this.
     pub extra_hosts: Vec<(String, String)>,
+    pub memory_limit_bytes: Option<u64>,
+    pub cpu_limit: Option<f64>,
+    /// `<host>:<container>[/tcp|udp]` specs - see `network::PortSpec`.
+    /// Requires `network` to be set (there's no container IP to route to
+    /// otherwise); `start` rejects the combination of ports with no network.
+    pub ports: Vec<String>,
+    pub restart_policy: crate::container::RestartPolicy,
 }
 
 impl RunSpec {
@@ -105,6 +152,10 @@ impl RunSpec {
             network: None,
             extra_env: Vec::new(),
             extra_hosts: Vec::new(),
+            memory_limit_bytes: None,
+            cpu_limit: None,
+            ports: Vec::new(),
+            restart_policy: crate::container::RestartPolicy::No,
         }
     }
 }
@@ -123,6 +174,12 @@ impl RunSpec {
 /// and friends are no-ops on a directory that already exists with content
 /// in it. A plain `kiln run` never passes this.
 pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliResult<Container> {
+    if !spec.ports.is_empty() && spec.network.is_none() {
+        return Err(CliError::msg("publishing ports (-p) requires --network (there's no container IP to route to otherwise)"));
+    }
+    let port_specs: Vec<super::network::PortSpec> =
+        spec.ports.iter().map(|s| super::network::PortSpec::parse(s)).collect::<Result<_, _>>().map_err(CliError::msg)?;
+
     let image =
         Image::resolve(store, &spec.image).map_err(|e| CliError::msg(format!("resolving image {:?}: {e}", spec.image)))?;
     let image_id = image.id();
@@ -237,14 +294,27 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         network: None,
         volumes: spec.volumes,
         env: spec.extra_env,
+        memory_limit_bytes: spec.memory_limit_bytes,
+        cpu_limit: spec.cpu_limit,
+        ports: spec.ports,
+        restart_policy: spec.restart_policy,
     };
 
-    // Created (unrestricted, by default - see cgroup.rs) before the
+    // Created (unrestricted unless --memory/--cpus were given) before the
     // container exists, so the post-spawn hook below can move the
     // container's pid into it before the container has a chance to run
     // anything; the resulting memory.current/cpu.stat/pids.current are
     // what `kilnd`'s dashboard API reads for live stats.
-    let cgroup = crate::cgroup::create_for(&id).map_err(CliError::from)?;
+    let limits = kilnd_core::cgroups::Limits {
+        cpu_max_us: spec.cpu_limit.map(|cpus| (cpus * 100_000.0) as u64),
+        cpu_period_us: 100_000,
+        memory_max_bytes: spec.memory_limit_bytes,
+        // See Limits::memory_swap_max_bytes's docs: without also capping
+        // swap, a memory limit isn't really a hard cap.
+        memory_swap_max_bytes: spec.memory_limit_bytes.map(|_| 0),
+        pids_max: None,
+    };
+    let cgroup = crate::cgroup::create_for(&id, &limits).map_err(CliError::from)?;
 
     let container_id_for_net = id.clone();
     let network = spec.network;
@@ -253,6 +323,9 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         match &network {
             Some(net) => {
                 let ip = super::network::attach_container(store, net, &container_id_for_net, pid)?;
+                for port in &port_specs {
+                    super::network::spawn_port_forwarder(port, ip.clone())?;
+                }
                 Ok(Some((net.clone(), ip)))
             }
             None => Ok(None),
@@ -291,6 +364,10 @@ pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
         network: container.network.clone(),
         extra_env: container.env.clone(),
         extra_hosts: Vec::new(),
+        memory_limit_bytes: container.memory_limit_bytes,
+        cpu_limit: container.cpu_limit,
+        ports: container.ports.clone(),
+        restart_policy: container.restart_policy,
     };
     start(store, spec, Some(container.id.clone()))
 }

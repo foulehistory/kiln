@@ -115,22 +115,102 @@ struct TokenResponse {
     token: String,
 }
 
-/// `None` for an explicit-host registry (no auth support yet, see the
-/// module docs); `Some(token)` for Docker Hub, which always requires one -
-/// even for anonymous, public pulls.
+/// `Some(token)` for Docker Hub, which always requires one - even for
+/// anonymous, public pulls. For an explicit-host registry, delegates to
+/// [`get_explicit_host_token`], which itself resolves to `None` for one
+/// that doesn't challenge for auth at all.
 fn get_token(reference: &Reference) -> Result<Option<String>> {
-    if reference.host.is_some() {
-        return Ok(None);
+    match &reference.host {
+        Some(_) => get_explicit_host_token(&reference.base_url(), &reference.repository, "pull"),
+        None => {
+            let repository = &reference.repository;
+            let url = format!("{DOCKER_HUB_AUTH}?service={DOCKER_HUB_SERVICE}&scope=repository:{repository}:pull");
+            let resp = ureq::get(&url)
+                .call()
+                .map_err(|e| Error::Registry(format!("requesting pull token for {repository}: {e}")))?;
+            let parsed: TokenResponse =
+                resp.into_json().map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
+            Ok(Some(parsed.token))
+        }
     }
-    let repository = &reference.repository;
-    let url = format!("{DOCKER_HUB_AUTH}?service={DOCKER_HUB_SERVICE}&scope=repository:{repository}:pull");
-    let resp = ureq::get(&url)
-        .call()
-        .map_err(|e| Error::Registry(format!("requesting pull token for {repository}: {e}")))?;
-    let parsed: TokenResponse = resp
-        .into_json()
-        .map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
+}
+
+/// For an explicit-host registry: ping `/v2/` to see whether it challenges
+/// for auth at all, and if so, fetch a Bearer token for `scope_action`
+/// (`"pull"` or `"pull,push"`) against the realm it names - the standard
+/// OCI Distribution auth flow, the same shape as Docker Hub's own (just
+/// discovered from the registry's challenge instead of hardcoded to one
+/// specific auth server). `KILN_REGISTRY_USER`/`KILN_REGISTRY_PASS`, if
+/// set, are sent as HTTP Basic auth when fetching that token - the usual
+/// way a registry ties an anonymous-looking token request to a real
+/// identity.
+fn get_explicit_host_token(base_url: &str, repository: &str, scope_action: &str) -> Result<Option<String>> {
+    let ping_url = format!("{base_url}/v2/");
+    let challenge = match ureq::get(&ping_url).call() {
+        Ok(_) => return Ok(None),
+        Err(ureq::Error::Status(401, resp)) => resp.header("WWW-Authenticate").map(|s| s.to_string()),
+        Err(_) => None,
+    };
+    let Some(challenge) = challenge else { return Ok(None) };
+    let Some((realm, service)) = parse_bearer_challenge(&challenge) else { return Ok(None) };
+
+    let scope = format!("repository:{repository}:{scope_action}");
+    let separator = if realm.contains('?') { "&" } else { "?" };
+    let token_url = format!("{realm}{separator}service={service}&scope={scope}");
+    let mut req = ureq::get(&token_url);
+    if let Some((user, pass)) = explicit_host_credentials() {
+        req = req.set("Authorization", &format!("Basic {}", base64_encode(&format!("{user}:{pass}"))));
+    }
+    let resp = req.call().map_err(|e| Error::Registry(format!("requesting token from {realm}: {e}")))?;
+    let parsed: TokenResponse = resp.into_json().map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
     Ok(Some(parsed.token))
+}
+
+/// `KILN_REGISTRY_USER`/`KILN_REGISTRY_PASS`, if both are set. Docker Hub
+/// never consults this - its own token dance is always anonymous.
+fn explicit_host_credentials() -> Option<(String, String)> {
+    let user = std::env::var("KILN_REGISTRY_USER").ok()?;
+    let pass = std::env::var("KILN_REGISTRY_PASS").ok()?;
+    Some((user, pass))
+}
+
+/// Parse a `WWW-Authenticate: Bearer realm="...",service="...",...`
+/// challenge header into `(realm, service)`. A registry that doesn't
+/// challenge with `Bearer` at all (accepts Basic auth directly, or
+/// requires nothing) yields `None`, which callers treat as "no token
+/// needed here".
+fn parse_bearer_challenge(header: &str) -> Option<(String, String)> {
+    let rest = header.strip_prefix("Bearer ")?;
+    let mut realm = None;
+    let mut service = String::new();
+    for part in rest.split(',') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("realm=\"").and_then(|s| s.strip_suffix('"')) {
+            realm = Some(v.to_string());
+        } else if let Some(v) = part.strip_prefix("service=\"").and_then(|s| s.strip_suffix('"')) {
+            service = v.to_string();
+        }
+    }
+    Some((realm?, service))
+}
+
+/// A minimal base64 (standard alphabet, `=`-padded) encoder - just enough
+/// for an HTTP Basic `Authorization` header, not worth a whole extra
+/// dependency for.
+fn base64_encode(input: &str) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(CHARS[(b0 >> 2) as usize] as char);
+        out.push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 { CHARS[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { CHARS[(b2 & 0x3f) as usize] as char } else { '=' });
+    }
+    out
 }
 
 #[derive(Deserialize)]

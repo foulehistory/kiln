@@ -18,6 +18,36 @@ pub enum Status {
     Exited(i32),
 }
 
+/// `--restart`. Checked by the per-container supervisor right before it
+/// would otherwise exit after recording the container's exit code - see
+/// `supervisor.rs`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum RestartPolicy {
+    #[default]
+    No,
+    Always,
+    OnFailure,
+}
+
+impl RestartPolicy {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "no" => Ok(RestartPolicy::No),
+            "always" => Ok(RestartPolicy::Always),
+            "on-failure" => Ok(RestartPolicy::OnFailure),
+            other => Err(format!("invalid --restart {other:?}: expected no, always, or on-failure")),
+        }
+    }
+
+    pub fn should_restart(self, exit_code: i32) -> bool {
+        match self {
+            RestartPolicy::No => false,
+            RestartPolicy::Always => true,
+            RestartPolicy::OnFailure => exit_code != 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Container {
     pub id: String,
@@ -53,6 +83,22 @@ pub struct Container {
     pub volumes: Vec<String>,
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// `--memory`/`--cpus`, persisted for the same reason as `volumes`/`env`
+    /// above - so `kiln start` reapplies the same limits instead of
+    /// silently reverting to unlimited.
+    #[serde(default)]
+    pub memory_limit_bytes: Option<u64>,
+    #[serde(default)]
+    pub cpu_limit: Option<f64>,
+    /// `-p`/`--publish` specs this container was started with - persisted
+    /// for the same restart-fidelity reason as `volumes`/`env` above. No
+    /// separate cleanup step reads this back: the port-forwarding relay's
+    /// lifetime is tied directly to the supervisor process (see
+    /// `network::spawn_port_forwarder`'s docs), not tracked here.
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub restart_policy: RestartPolicy,
 }
 
 impl Container {

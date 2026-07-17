@@ -73,12 +73,30 @@ pub struct RunRequest {
     pub network: Option<String>,
     #[serde(default)]
     pub environment: Vec<(String, String)>,
+    /// e.g. `"512m"`, `"1g"` - see `commands::run::parse_size`.
+    #[serde(default)]
+    pub memory: Option<String>,
+    #[serde(default)]
+    pub cpus: Option<f64>,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    /// `"no"` (default), `"always"`, or `"on-failure"`.
+    #[serde(default)]
+    pub restart: Option<String>,
 }
 
 pub fn create(store: &Store, req: &Request) -> Response {
     let body: RunRequest = match req.json() {
         Ok(b) => b,
         Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    let memory_limit_bytes = match body.memory.as_deref().map(kiln_cli::commands::run::parse_size).transpose() {
+        Ok(v) => v,
+        Err(e) => return Response::text(400, e),
+    };
+    let restart_policy = match body.restart.as_deref().map(kiln_cli::container::RestartPolicy::parse).transpose() {
+        Ok(v) => v.unwrap_or_default(),
+        Err(e) => return Response::text(400, e),
     };
 
     let mut spec = kiln_cli::commands::run::RunSpec::new(body.image);
@@ -87,6 +105,10 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.volumes = body.volumes;
     spec.network = body.network;
     spec.extra_env = body.environment;
+    spec.memory_limit_bytes = memory_limit_bytes;
+    spec.cpu_limit = body.cpus;
+    spec.restart_policy = restart_policy;
+    spec.ports = body.ports;
 
     match kiln_cli::commands::run::start(store, spec, None) {
         Ok(c) => Response::json(201, &to_json(c, store)),

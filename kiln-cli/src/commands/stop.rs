@@ -67,6 +67,11 @@ pub fn stop_container(store: &Store, id_or_name: &str) -> CliResult<Container> {
         let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
     }
 
+    // No separate step needed to stop routing published ports: the relay
+    // listener lives inside the per-container supervisor process (see
+    // network::spawn_port_forwarder's docs), which exits on its own once
+    // it observes (via waitpid) that the container process above is gone.
+
     c.refresh(store);
     Ok(c)
 }

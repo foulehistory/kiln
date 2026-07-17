@@ -156,9 +156,30 @@ where
                 _ => -1,
             };
 
+            let mut restart_policy = container.restart_policy;
             if let Some(mut c) = Container::load(store, &container.id) {
                 c.status = Status::Exited(exit_code);
                 let _ = c.save(store);
+                restart_policy = c.restart_policy;
+            }
+
+            // `--restart always`/`on-failure`: rather than looping inside
+            // this same process, hand off to a *fresh*
+            // `commands::run::restart` call - it already does exactly
+            // "relaunch this id, reusing its writable state", forking its
+            // own new detached supervisor that outlives this one. This
+            // process still exits normally right after, so there's never
+            // a moment with two supervisors both watching the same
+            // container. A flat one-second delay is a deliberately crude
+            // crash-loop guard (no backoff/retry-count tracking yet) -
+            // good enough to keep a persistently-crashing container from
+            // spinning as fast as the kernel can fork, not a polished
+            // rate limiter.
+            if restart_policy.should_restart(exit_code) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if let Err(e) = crate::commands::run::restart(store, &container.id) {
+                    eprintln!("kiln: restart policy: relaunching {}: {e}", container.id);
+                }
             }
             std::process::exit(0);
         }

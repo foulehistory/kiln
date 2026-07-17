@@ -48,6 +48,12 @@ enum Command {
     Rmi(commands::rmi::Args),
     /// Reclaim disk space: delete blobs/images no longer referenced by any tag
     Gc(commands::gc::Args),
+    /// Show full JSON details of a container or image
+    Inspect(commands::inspect::Args),
+    /// Show live resource usage for running containers
+    Top(commands::top::Args),
+    /// Copy a file between the host and a running container
+    Cp(commands::cp::Args),
     /// Manage volumes
     #[command(subcommand)]
     Volume(commands::volume::Command),
@@ -82,6 +88,9 @@ fn main() {
         Command::Rm(args) => commands::rm::run(&store, args),
         Command::Rmi(args) => commands::rmi::run(&store, args),
         Command::Gc(args) => commands::gc::run(&store, args),
+        Command::Inspect(args) => commands::inspect::run(&store, args),
+        Command::Top(args) => commands::top::run(&store, args),
+        Command::Cp(args) => commands::cp::run(&store, args),
         Command::Volume(cmd) => commands::volume::run(&store, cmd),
         Command::Network(cmd) => commands::network::run(&store, cmd),
     };

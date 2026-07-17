@@ -16,6 +16,8 @@ pub enum Command {
     Create { name: String },
     Ls,
     Rm { name: String },
+    /// Remove every volume not referenced by any container's stored `-v` specs
+    Prune,
 }
 
 pub fn volumes_dir(store: &Store) -> PathBuf {
@@ -44,6 +46,26 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
         Command::Rm { name } => {
             std::fs::remove_dir_all(path(store, &name))?;
             println!("{name}");
+        }
+        Command::Prune => {
+            let referenced: std::collections::HashSet<String> = crate::container::Container::list(store)
+                .iter()
+                .flat_map(|c| c.volumes.iter())
+                .filter_map(|v| v.split_once(':').map(|(name, _)| name.to_string()))
+                .collect();
+            let mut any = false;
+            if let Ok(entries) = std::fs::read_dir(volumes_dir(store)) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !referenced.contains(&name) && std::fs::remove_dir_all(entry.path()).is_ok() {
+                        println!("{name}");
+                        any = true;
+                    }
+                }
+            }
+            if !any {
+                println!("nothing to prune");
+            }
         }
     }
     Ok(())

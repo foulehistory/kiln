@@ -108,6 +108,20 @@ pub enum Command {
     Rm {
         name: String,
     },
+    /// Remove every network not currently attached to any container
+    Prune,
+}
+
+/// The teardown half of `Create`: delete the bridge, the MASQUERADE rule,
+/// and the stored config. Shared by `Rm` and `Prune` so they can't drift.
+fn remove_network(store: &Store, name: &str) -> CliResult {
+    let cfg = NetworkConfig::load(store, name).ok_or_else(|| CliError::msg(format!("no such network: {name}")))?;
+    let _ = run_cmd("ip", &["link", "del", &cfg.bridge]);
+    let _ = ProcessCommand::new("iptables")
+        .args(["-t", "nat", "-D", "POSTROUTING", "-s", &cfg.subnet, "!", "-o", &cfg.bridge, "-j", "MASQUERADE"])
+        .status();
+    std::fs::remove_file(config_path(store, name))?;
+    Ok(())
 }
 
 pub fn run(store: &Store, cmd: Command) -> CliResult {
@@ -150,13 +164,25 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
             println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
         }
         Command::Rm { name } => {
-            let cfg = NetworkConfig::load(store, &name).ok_or_else(|| CliError::msg(format!("no such network: {name}")))?;
-            let _ = run_cmd("ip", &["link", "del", &cfg.bridge]);
-            let _ = ProcessCommand::new("iptables")
-                .args(["-t", "nat", "-D", "POSTROUTING", "-s", &cfg.subnet, "!", "-o", &cfg.bridge, "-j", "MASQUERADE"])
-                .status();
-            std::fs::remove_file(config_path(store, &name))?;
+            remove_network(store, &name)?;
             println!("{name}");
+        }
+        Command::Prune => {
+            let referenced: std::collections::HashSet<String> =
+                crate::container::Container::list(store).iter().filter_map(|c| c.network.clone()).collect();
+            let mut any = false;
+            if let Ok(entries) = std::fs::read_dir(networks_dir(store)) {
+                for entry in entries.flatten() {
+                    let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+                    if !referenced.contains(&stem) && remove_network(store, &stem).is_ok() {
+                        println!("{stem}");
+                        any = true;
+                    }
+                }
+            }
+            if !any {
+                println!("nothing to prune");
+            }
         }
     }
     Ok(())
@@ -193,4 +219,81 @@ pub fn attach_container(store: &Store, network: &str, container_id: &str, pid: i
     run_cmd("nsenter", &["-t", &pid_s, "-n", "ip", "route", "add", "default", "via", &cfg.gateway])?;
 
     Ok(ip)
+}
+
+/// A parsed `-p`/`--publish` spec: `<host-port>:<container-port>[/tcp|udp]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortSpec {
+    pub host_port: u16,
+    pub container_port: u16,
+    pub proto: String,
+}
+
+impl PortSpec {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let (ports, proto) = match s.split_once('/') {
+            Some((p, proto)) => (p, proto.to_string()),
+            None => (s, "tcp".to_string()),
+        };
+        let (host, container) =
+            ports.split_once(':').ok_or_else(|| format!("invalid port spec {s:?}: expected <host>:<container>[/tcp|udp]"))?;
+        let host_port: u16 = host.parse().map_err(|_| format!("invalid host port in {s:?}"))?;
+        let container_port: u16 = container.parse().map_err(|_| format!("invalid container port in {s:?}"))?;
+        if proto != "tcp" && proto != "udp" {
+            return Err(format!("invalid protocol in {s:?}: expected tcp or udp"));
+        }
+        Ok(PortSpec { host_port, container_port, proto })
+    }
+}
+
+/// Publish `port` by relaying plain TCP: bind `0.0.0.0:<host_port>` and,
+/// for each accepted connection, open a new connection to
+/// `container_ip:<container_port>` and pump bytes both ways.
+///
+/// This is deliberately *not* `iptables` DNAT, despite that being the
+/// obvious first approach (and the one this code originally shipped with).
+/// DNAT-ing a *locally-originated* connection to `127.0.0.1:<host_port>`
+/// back out to a different real interface needs `route_localnet` tuned
+/// correctly, a second routing lookup via `ip_route_me_harder`, and still
+/// wasn't reliably reachable in this exact environment even with all of
+/// that - and a locally-originated loopback connection is precisely what
+/// matters here, since WSL2's own Windows<->Linux localhost forwarding is
+/// itself a connection made from inside the VM. A plain relay sidesteps
+/// the whole class of hairpin-NAT edge cases and needs no extra binary
+/// (no `socat`) - just `std::net`.
+///
+/// Runs for as long as the calling process does. The one caller
+/// (`commands::run::start`'s `post_spawn` hook) always runs this from
+/// *inside* the per-container supervisor process (see `supervisor.rs`),
+/// which lives for exactly the container's lifetime and no longer - so
+/// the relay's listener and any in-flight connections are cleaned up for
+/// free when that process exits, no explicit unpublish step needed.
+pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<()> {
+    if port.proto != "tcp" {
+        return Err(CliError::msg(format!("publishing a {} port is not supported yet (tcp only)", port.proto)));
+    }
+    let listener = std::net::TcpListener::bind(("0.0.0.0", port.host_port))
+        .map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
+    let target = format!("{container_ip}:{}", port.container_port);
+
+    std::thread::spawn(move || {
+        for incoming in listener.incoming() {
+            let Ok(client) = incoming else { continue };
+            let target = target.clone();
+            std::thread::spawn(move || {
+                let Ok(upstream) = std::net::TcpStream::connect(&target) else { return };
+                let _ = client.set_nodelay(true);
+                let _ = upstream.set_nodelay(true);
+                let (Ok(mut c1), Ok(mut u1)) = (client.try_clone(), upstream.try_clone()) else { return };
+                let pump_in = std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut c1, &mut u1);
+                });
+                let mut c2 = client;
+                let mut u2 = upstream;
+                let _ = std::io::copy(&mut u2, &mut c2);
+                let _ = pump_in.join();
+            });
+        }
+    });
+    Ok(())
 }

@@ -41,7 +41,7 @@ fn stop_falls_back_to_sigkill_when_sigterm_is_ignored() {
         .expect("spawn a SIGTERM-ignoring child");
     let pid = child.id() as i32;
 
-    let cgroup = kiln_cli::cgroup::create_for(&id).expect("create cgroup");
+    let cgroup = kiln_cli::cgroup::create_for(&id, &Default::default()).expect("create cgroup");
     cgroup.add_process(nix::unistd::Pid::from_raw(pid)).expect("add_process");
 
     let container = Container {
@@ -57,6 +57,10 @@ fn stop_falls_back_to_sigkill_when_sigterm_is_ignored() {
         network: None,
         volumes: Vec::new(),
         env: Vec::new(),
+        memory_limit_bytes: None,
+        cpu_limit: None,
+        ports: Vec::new(),
+        restart_policy: kiln_cli::container::RestartPolicy::No,
     };
     container.save(&store).expect("save container state");
 
