@@ -84,7 +84,16 @@ impl Reference {
 
         match repo.split_once('/') {
             Some((first, rest)) if first.contains('.') || first.contains(':') || first == "localhost" => {
-                Reference { host: Some(first.to_string()), repository: rest.to_string(), tag }
+                // `normalize_repository` here too, not just for the Docker
+                // Hub branch below: without it, pulling a bare (no further
+                // `/`) repository name from an explicit host tags it
+                // locally under that bare name alone (e.g. `base/latest`),
+                // which `Image::resolve` can never find again - it always
+                // normalizes a bare name to `library/<name>` before
+                // looking up a tag, on the assumption (stated in
+                // `normalize_repository`'s own doc comment) that pull
+                // already saved it under that same normalized name.
+                Reference { host: Some(first.to_string()), repository: crate::image::normalize_repository(rest), tag }
             }
             _ => Reference { host: None, repository: crate::image::normalize_repository(&repo), tag },
         }

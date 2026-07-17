@@ -1,0 +1,5 @@
+FROM scratch
+COPY bin /bin
+ENV PATH=/bin
+WORKDIR /
+CMD /bin/sh
