@@ -40,12 +40,17 @@ jobs:
         run: cargo build --release -p kiln-cli -p kiln-compose -p kilnd
 
       - name: Package binaries
+        # `bin/` prefix (not flat) so this same tarball also carries
+        # `base-image/` without name collisions - the dashboard's
+        # first-run setup extracts both from one archive into
+        # $KILN_STORE directly (see kiln-dashboard/electron/main.js's
+        # `installKilnBinariesScript`), landing at $KILN_STORE/bin/kiln
+        # etc. and $KILN_STORE/base-image/.
         run: |
-          mkdir -p dist
-          cp target/release/kiln dist/kiln
-          cp target/release/kiln-compose dist/kiln-compose
-          cp target/release/kilnd dist/kilnd
-          tar -C dist -czf kiln-linux-x86_64.tar.gz kiln kiln-compose kilnd
+          mkdir -p dist/bin dist/base-image
+          cp target/release/kiln target/release/kiln-compose target/release/kilnd dist/bin/
+          cp -r base-image/Kilnfile base-image/bin dist/base-image/
+          tar -C dist -czf kiln-linux-x86_64.tar.gz bin base-image
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
