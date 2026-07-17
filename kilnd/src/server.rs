@@ -13,7 +13,16 @@ use std::sync::Arc;
 /// WSL2's automatic `localhost` port forwarding to Windows still applies
 /// to loopback addresses, so this is exactly as reachable from a native
 /// Windows Electron process as it needs to be, and no more.
-pub const TCP_PORT: u16 = 7867;
+pub const DEFAULT_TCP_PORT: u16 = 7867;
+
+/// `KILN_TCP_PORT` if set (kiln-dashboard's `electron/main.js` already
+/// reads this same variable to decide which port to *connect* to), else
+/// [`DEFAULT_TCP_PORT`] - lets more than one `kilnd` run side by side
+/// (e.g. an isolated instance under test) without colliding on the
+/// well-known port.
+fn tcp_port() -> u16 {
+    std::env::var("KILN_TCP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_TCP_PORT)
+}
 
 pub fn run(store: Store, socket_path: &Path) -> io::Result<()> {
     // A stale socket file from a kilnd that didn't shut down cleanly
@@ -27,8 +36,9 @@ pub fn run(store: Store, socket_path: &Path) -> io::Result<()> {
     let unix_listener = UnixListener::bind(socket_path)?;
     eprintln!("kilnd: listening on {} (unix)", socket_path.display());
 
-    let tcp_listener = TcpListener::bind(("127.0.0.1", TCP_PORT))?;
-    eprintln!("kilnd: listening on 127.0.0.1:{TCP_PORT} (tcp, loopback only)");
+    let port = tcp_port();
+    let tcp_listener = TcpListener::bind(("127.0.0.1", port))?;
+    eprintln!("kilnd: listening on 127.0.0.1:{port} (tcp, loopback only)");
 
     let store = Arc::new(store);
 

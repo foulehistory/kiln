@@ -56,3 +56,13 @@ fn image_json(store: &Store, id: Hash, repository: Option<String>, tag: Option<S
 
     ImageJson { id: id.to_string(), repository, tag, layers, size_bytes }
 }
+
+pub fn remove(store: &Store, id: &str) -> Response {
+    let Ok(hash) = Hash::from_hex(id) else {
+        return Response::text(400, format!("invalid image id: {id}"));
+    };
+    match kiln_cli::commands::rmi::remove_by_id(store, hash) {
+        Ok(message) => Response::json(200, &serde_json::json!({ "message": message })),
+        Err(e) => Response::text(404, e),
+    }
+}

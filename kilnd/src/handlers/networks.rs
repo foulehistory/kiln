@@ -1,8 +1,8 @@
-use crate::http::Response;
-use kiln_cli::commands::network::NetworkConfig;
+use crate::http::{Request, Response};
+use kiln_cli::commands::network::{self, NetworkConfig};
 use kiln_cli::container::Container;
 use kiln_image::store::Store;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 pub struct NetworkJson {
@@ -44,4 +44,33 @@ pub fn list(store: &Store) -> Response {
     }
 
     Response::json(200, &out)
+}
+
+#[derive(Deserialize)]
+pub struct CreateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub subnet: Option<String>,
+}
+
+pub fn create(store: &Store, req: &Request) -> Response {
+    let body: CreateRequest = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    // Same default the CLI's `#[arg(long, default_value = "172.30.0.0/24")]`
+    // uses, so a dashboard-created network without an explicit subnet
+    // behaves identically to `kiln network create <name>`.
+    let subnet = body.subnet.unwrap_or_else(|| "172.30.0.0/24".to_string());
+    match network::run(store, network::Command::Create { name: body.name, subnet }) {
+        Ok(()) => Response::json(201, &serde_json::json!({ "ok": true })),
+        Err(e) => Response::text(500, format!("{e}")),
+    }
+}
+
+pub fn remove(store: &Store, name: &str) -> Response {
+    match network::run(store, network::Command::Rm { name: name.to_string() }) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "ok": true })),
+        Err(e) => Response::text(404, format!("{e}")),
+    }
 }

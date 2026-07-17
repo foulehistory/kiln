@@ -47,3 +47,35 @@ pub fn run(store: &Store, args: Args) -> CliResult {
     }
     Ok(())
 }
+
+/// Remove an image identified by its content hash: untags every tag that
+/// currently points at it (there can be more than one, unlike the
+/// single-reference case [`run`] handles) and deletes the manifest
+/// itself. Used by kilnd's `DELETE /images/:id` - the dashboard only ever
+/// has the hash to act on, not a specific `repo:tag` the way `kiln rmi`
+/// does, so "remove everything pointing at this id" is the only
+/// unambiguous meaning of "remove this image" there.
+pub fn remove_by_id(store: &Store, id: Hash) -> Result<String, String> {
+    let mut removed_tags = Vec::new();
+    for (repo, tag, tagged_id) in store.all_tags() {
+        if tagged_id == id {
+            let tag_path = store.refs_dir().join(&repo).join(&tag);
+            std::fs::remove_file(&tag_path).map_err(|e| format!("untagging {repo}:{tag}: {e}"))?;
+            removed_tags.push(format!("{repo}:{tag}"));
+        }
+    }
+
+    let manifest_path = store.images_dir().join(format!("{id}.json"));
+    let manifest_existed = manifest_path.is_file();
+    if manifest_existed {
+        std::fs::remove_file(&manifest_path).map_err(|e| format!("deleting {id}: {e}"))?;
+    } else if removed_tags.is_empty() {
+        return Err(format!("no such image: {id}"));
+    }
+
+    if removed_tags.is_empty() {
+        Ok(format!("deleted: {id}"))
+    } else {
+        Ok(format!("untagged {} and deleted: {id}", removed_tags.join(", ")))
+    }
+}
