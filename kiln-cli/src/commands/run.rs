@@ -66,7 +66,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         extra_hosts: Vec::new(),
     };
 
-    let container = start(store, spec)?;
+    let container = start(store, spec, None)?;
 
     if args.detach {
         println!("{}", container.id);
@@ -114,7 +114,15 @@ impl RunSpec {
 /// exit status always eventually recorded regardless of whether the
 /// caller waits around for that. Returns as soon as the container is
 /// confirmed started (`Status::Running`, real pid, already persisted).
-pub fn start(store: &Store, spec: RunSpec) -> CliResult<Container> {
+///
+/// `existing_id`, if given, reuses that id instead of generating a new
+/// one - this is what makes [`start`] do double duty as `restart`'s core
+/// too: every path keyed by id (the writable `upper`/`work` layer, the log
+/// file, the cgroup) naturally picks up whatever's already there from a
+/// previous run rather than starting fresh, since `fs::create_dir_all`
+/// and friends are no-ops on a directory that already exists with content
+/// in it. A plain `kiln run` never passes this.
+pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliResult<Container> {
     let image =
         Image::resolve(store, &spec.image).map_err(|e| CliError::msg(format!("resolving image {:?}: {e}", spec.image)))?;
     let image_id = image.id();
@@ -127,7 +135,7 @@ pub fn start(store: &Store, spec: RunSpec) -> CliResult<Container> {
         return Err(CliError::msg("image has no default CMD; specify a command, e.g. `kiln run <image> /bin/sh`"));
     };
 
-    let id = generate_id();
+    let id = existing_id.unwrap_or_else(generate_id);
     let name = spec.name.unwrap_or_else(|| id[..12].to_string());
     let uid_base = identity::SUBORDINATE_UID_BASE;
     let gid_base = identity::SUBORDINATE_GID_BASE;
@@ -209,7 +217,7 @@ pub fn start(store: &Store, spec: RunSpec) -> CliResult<Container> {
     let log_fd: RawFd = log_file.as_raw_fd();
 
     let mut env = image.config.env.clone();
-    env.extend(spec.extra_env);
+    env.extend(spec.extra_env.iter().cloned());
     let workdir = if image.config.workdir.is_empty() { "/".to_string() } else { image.config.workdir.clone() };
     let command_for_state = command.clone();
 
@@ -227,6 +235,8 @@ pub fn start(store: &Store, spec: RunSpec) -> CliResult<Container> {
         created_at: now_unix(),
         ip: None,
         network: None,
+        volumes: spec.volumes,
+        env: spec.extra_env,
     };
 
     // Created (unrestricted, by default - see cgroup.rs) before the
@@ -252,6 +262,37 @@ pub fn start(store: &Store, spec: RunSpec) -> CliResult<Container> {
     let saved = supervisor::spawn_detached(store, container, &opts, child_fn, Some(post_spawn))?;
     drop(log_file);
     Ok(saved)
+}
+
+/// Restart a stopped container: rebuild a [`RunSpec`] from what it was
+/// last started with and re-[`start`] it under the *same* id, so its
+/// existing writable layer (and hence anything the previous run wrote to
+/// disk) carries over rather than starting from a clean image again -
+/// the same "state survives a restart" behavior `docker start` has.
+///
+/// Deliberately does not resurrect `extra_hosts`: those already live on
+/// disk as whatever `/etc/hosts` the previous run last wrote (untouched
+/// by this restart, since `start` only touches `/etc/hosts` when
+/// `extra_hosts` is non-empty), so re-supplying them here would just
+/// duplicate entries rather than restore anything.
+pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
+    let mut container = Container::resolve(store, id_or_name)
+        .ok_or_else(|| CliError::msg(format!("no such container: {id_or_name}")))?;
+    container.refresh(store);
+    if container.status == Status::Running {
+        return Err(CliError::msg(format!("container {} is already running", container.id)));
+    }
+
+    let spec = RunSpec {
+        image: container.image_reference.clone(),
+        command: container.command.clone(),
+        name: Some(container.name.clone()),
+        volumes: container.volumes.clone(),
+        network: container.network.clone(),
+        extra_env: container.env.clone(),
+        extra_hosts: Vec::new(),
+    };
+    start(store, spec, Some(container.id.clone()))
 }
 
 /// Tail a container's log to stdout and block until it exits, returning

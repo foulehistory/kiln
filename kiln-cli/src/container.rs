@@ -42,6 +42,17 @@ pub struct Container {
     /// without having to cross-reference every network's own state.
     #[serde(default)]
     pub network: Option<String>,
+    /// The `-v <volume>:<path>` mounts and extra environment variables
+    /// this container was started with - not needed for a first `kiln
+    /// run`, but required to reproduce the same launch on `kiln start`
+    /// (restarting a stopped container) without asking the caller to
+    /// re-supply them. `#[serde(default)]` so state.json written before
+    /// these fields existed still deserializes (as "none", the closest
+    /// approximation for a container that predates `restart` entirely).
+    #[serde(default)]
+    pub volumes: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
 }
 
 impl Container {

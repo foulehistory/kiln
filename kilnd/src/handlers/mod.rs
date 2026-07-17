@@ -21,6 +21,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("DELETE", ["containers", id]) => containers::remove(store, id).write_to(stream),
         ("GET", ["containers", id, "stats"]) => containers::stats(store, id).write_to(stream),
         ("POST", ["containers", id, "stop"]) => containers::stop(store, id).write_to(stream),
+        ("POST", ["containers", id, "start"]) => containers::start_existing(store, id).write_to(stream),
         ("GET", ["containers", id, "logs"]) => containers::logs(store, id, req, stream),
         ("GET", ["containers", id, "exec"]) if req.is_upgrade_to("kiln-exec") => exec::handle(store, id, req, stream, reader),
         ("GET", ["images"]) => images::list(store).write_to(stream),

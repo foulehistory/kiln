@@ -124,8 +124,20 @@ impl CgroupV2 {
     /// Create `<parent>/<id>` and apply `limits` to it. `parent` must
     /// already have `CONTROLLERS` delegated to it (see
     /// [`ensure_delegated_root`]).
+    ///
+    /// Stopping a container (as opposed to removing it) deliberately
+    /// leaves its cgroup behind - see `kilnd`'s `stop` handler - so that
+    /// restarting under the same id has somewhere to reattach a fresh
+    /// process's stats to. A leftover, now-empty cgroup directory from
+    /// that previous run is exactly what `create` finds itself facing
+    /// then; a plain `mkdir` would fail on it with `EEXIST` even though
+    /// there's nothing wrong with removing and recreating an empty
+    /// directory that no live process is using.
     pub fn create(parent: &Path, id: &str, limits: &Limits) -> Result<Self> {
         let dir = parent.join(id);
+        if dir.is_dir() {
+            fs::remove_dir(&dir).map_err(error::io(&dir))?;
+        }
         fs::create_dir(&dir).map_err(error::io(&dir))?;
         let cgroup = CgroupV2 { dir };
         cgroup.apply_limits(limits)?;

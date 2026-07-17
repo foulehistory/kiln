@@ -88,8 +88,15 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.network = body.network;
     spec.extra_env = body.environment;
 
-    match kiln_cli::commands::run::start(store, spec) {
+    match kiln_cli::commands::run::start(store, spec, None) {
         Ok(c) => Response::json(201, &to_json(c, store)),
+        Err(e) => Response::text(500, format!("{e}")),
+    }
+}
+
+pub fn start_existing(store: &Store, id: &str) -> Response {
+    match kiln_cli::commands::run::restart(store, id) {
+        Ok(c) => Response::json(200, &to_json(c, store)),
         Err(e) => Response::text(500, format!("{e}")),
     }
 }

@@ -24,6 +24,8 @@ struct Cli {
 enum Command {
     /// Run a command in a new container
     Run(commands::run::Args),
+    /// Restart a stopped container, reusing its existing writable state
+    Start(commands::start::Args),
     /// Build an image from a Kilnfile
     Build(commands::build::Args),
     /// Pull an image from a registry
@@ -64,6 +66,7 @@ fn main() {
 
     let result = match cli.command {
         Command::Run(args) => commands::run::run(&store, args),
+        Command::Start(args) => commands::start::run(&store, args),
         Command::Build(args) => commands::build::run(&store, args),
         Command::Pull(args) => commands::pull::run(&store, args),
         Command::Push(args) => commands::push::run(&store, args),

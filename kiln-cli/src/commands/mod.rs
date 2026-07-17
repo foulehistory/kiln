@@ -9,6 +9,7 @@ pub mod push;
 pub mod rm;
 pub mod rmi;
 pub mod run;
+pub mod start;
 pub mod volume;
 
 use kiln_image::store::Store;

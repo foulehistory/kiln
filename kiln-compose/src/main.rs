@@ -214,7 +214,7 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
         spec.extra_hosts = hosts.clone();
 
         println!("Starting {name}...");
-        let container = start(store, spec).map_err(|e| CliError::msg(format!("service {name}: {e}")))?;
+        let container = start(store, spec, None).map_err(|e| CliError::msg(format!("service {name}: {e}")))?;
         if let Some(ip) = &container.ip {
             println!("  {name}: {} ({ip})", &container.id[..12]);
             hosts.push((name.clone(), ip.clone()));
