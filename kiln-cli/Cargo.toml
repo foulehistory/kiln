@@ -1,6 +1,6 @@
 [package]
 name = "kiln-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "kiln: the Kiln container CLI (daemonless by default)."
 license = "Apache-2.0"
