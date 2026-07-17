@@ -461,6 +461,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_yaml",
+ "tempfile",
  "thiserror",
 ]
 

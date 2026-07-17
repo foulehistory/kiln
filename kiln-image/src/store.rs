@@ -142,6 +142,53 @@ impl Store {
         Hash::from_hex(content.trim())
     }
 
+    /// Every `(repository, tag, image id)` triple currently pointed at by
+    /// a ref, however deep the repository path itself is. It's not always
+    /// one segment: unqualified names get normalized to `library/<name>`
+    /// (see [`crate::image::normalize_repository`]), and a user-supplied
+    /// name can already contain its own `/`. Only the last path component
+    /// under `refs_dir()` is ever a tag - everything above it is the
+    /// repository. The one place this walk needs to happen, shared by
+    /// `kiln images`, `kilnd`'s `/images`, and `kiln gc` - previously each
+    /// had (or would have needed) their own copy.
+    pub fn all_tags(&self) -> Vec<(String, String, Hash)> {
+        fn walk(dir: &Path, repo_prefix: &str, out: &mut Vec<(String, String)>) {
+            let Ok(entries) = fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else { continue };
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if file_type.is_dir() {
+                    let prefix = if repo_prefix.is_empty() { name } else { format!("{repo_prefix}/{name}") };
+                    walk(&entry.path(), &prefix, out);
+                } else {
+                    out.push((repo_prefix.to_string(), name));
+                }
+            }
+        }
+        let mut refs = Vec::new();
+        walk(&self.refs_dir(), "", &mut refs);
+        refs.into_iter()
+            .filter_map(|(repo, tag)| {
+                let id = self.resolve_tag(&repo, &tag).ok()?;
+                Some((repo, tag, id))
+            })
+            .collect()
+    }
+
+    /// Every image id that has an `images/<id>.json` manifest on disk,
+    /// tagged or not (an untagged one is either mid-build or a `<none>`
+    /// left behind by a tag being reassigned - see `kiln images`/`kiln gc`).
+    pub fn all_image_ids(&self) -> Vec<Hash> {
+        let Ok(entries) = fs::read_dir(self.images_dir()) else { return Vec::new() };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_str()?.to_string();
+                Hash::from_hex(name.strip_suffix(".json")?).ok()
+            })
+            .collect()
+    }
+
     pub fn write_json<T: serde::Serialize>(&self, path: &Path, value: &T) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(Error::io(parent))?;
@@ -162,6 +209,39 @@ impl Store {
 
     pub fn has_blob(&self, hash: &Hash) -> bool {
         self.blob_path(hash).is_file()
+    }
+
+    /// Every blob hash currently on disk, sharded two-hex-char directory
+    /// and all (see [`Store::blob_path`]) - what `kiln gc` diffs the "still
+    /// referenced by a tagged image" set against to find what it can
+    /// safely delete.
+    pub fn all_blobs(&self) -> Vec<Hash> {
+        let Ok(shards) = fs::read_dir(self.root.join("blobs")) else { return Vec::new() };
+        shards
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .flat_map(|shard| fs::read_dir(shard.path()).into_iter().flatten().flatten())
+            .filter_map(|entry| Hash::from_hex(entry.file_name().to_str()?).ok())
+            .collect()
+    }
+
+    /// Delete a blob's on-disk content. Only ever safe to call once
+    /// nothing live references it - see `kiln gc`, the one caller.
+    pub fn remove_blob(&self, hash: &Hash) -> Result<()> {
+        let path = self.blob_path(hash);
+        fs::remove_file(&path).map_err(Error::io(path))
+    }
+
+    /// Size in bytes of a blob's on-disk content, if it exists.
+    pub fn blob_size(&self, hash: &Hash) -> Option<u64> {
+        fs::metadata(self.blob_path(hash)).ok().map(|m| m.len())
+    }
+
+    /// Delete an image manifest (`images/<id>.json`). Only ever safe to
+    /// call on an id with no tag pointing at it - see `kiln gc`.
+    pub fn remove_image(&self, id: &Hash) -> Result<()> {
+        let path = self.images_dir().join(format!("{id}.json"));
+        fs::remove_file(&path).map_err(Error::io(path))
     }
 
     /// Store `data` verbatim, returning its content hash. A no-op (besides

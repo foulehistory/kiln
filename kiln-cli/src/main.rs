@@ -26,6 +26,8 @@ enum Command {
     Run(commands::run::Args),
     /// Restart a stopped container, reusing its existing writable state
     Start(commands::start::Args),
+    /// Stop one or more running containers (SIGTERM, then SIGKILL if needed)
+    Stop(commands::stop::Args),
     /// Build an image from a Kilnfile
     Build(commands::build::Args),
     /// Pull an image from a registry
@@ -44,6 +46,8 @@ enum Command {
     Rm(commands::rm::Args),
     /// Remove (untag) one or more images
     Rmi(commands::rmi::Args),
+    /// Reclaim disk space: delete blobs/images no longer referenced by any tag
+    Gc(commands::gc::Args),
     /// Manage volumes
     #[command(subcommand)]
     Volume(commands::volume::Command),
@@ -67,6 +71,7 @@ fn main() {
     let result = match cli.command {
         Command::Run(args) => commands::run::run(&store, args),
         Command::Start(args) => commands::start::run(&store, args),
+        Command::Stop(args) => commands::stop::run(&store, args),
         Command::Build(args) => commands::build::run(&store, args),
         Command::Pull(args) => commands::pull::run(&store, args),
         Command::Push(args) => commands::push::run(&store, args),
@@ -76,6 +81,7 @@ fn main() {
         Command::Logs(args) => commands::logs::run(&store, args),
         Command::Rm(args) => commands::rm::run(&store, args),
         Command::Rmi(args) => commands::rmi::run(&store, args),
+        Command::Gc(args) => commands::gc::run(&store, args),
         Command::Volume(cmd) => commands::volume::run(&store, cmd),
         Command::Network(cmd) => commands::network::run(&store, cmd),
     };

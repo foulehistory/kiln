@@ -245,6 +245,22 @@ fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
             Err(e) => eprintln!("kiln-compose: removing {container_name}: {e}"),
         }
     }
+
+    // `up` always creates (or reuses) a `<project>_default` bridge network
+    // for the project's services - `down` used to leave it (and its
+    // iptables MASQUERADE rule) behind entirely, the same class of orphan
+    // as the bridges that needed manual `ip link del` cleanup during
+    // development. Tear it down the same way `kiln network rm` would;
+    // tolerate it already being gone (e.g. a project that was never
+    // actually brought up, or a `down` run twice).
+    let network_name = format!("{project}_default");
+    if NetworkConfig::load(store, &network_name).is_some() {
+        match network::run(store, network::Command::Rm { name: network_name.clone() }) {
+            Ok(()) => println!("removed network {network_name}"),
+            Err(e) => eprintln!("kiln-compose: removing network {network_name}: {e}"),
+        }
+    }
+
     Ok(())
 }
 

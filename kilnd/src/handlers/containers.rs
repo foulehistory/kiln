@@ -102,9 +102,7 @@ pub fn start_existing(store: &Store, id: &str) -> Response {
 }
 
 /// True once `id`'s cgroup has no resident processes left - the same
-/// "did it actually die" check `remove` already used, reused here so
-/// `stop` can tell whether `SIGTERM` actually worked before deciding
-/// whether it needs to escalate.
+/// "did it actually die" check `remove` already used.
 fn cgroup_is_empty(id: &str) -> bool {
     kiln_cli::cgroup::open(id)
         .and_then(|dir| std::fs::read_to_string(dir.join("cgroup.procs")).ok())
@@ -112,41 +110,16 @@ fn cgroup_is_empty(id: &str) -> bool {
         .unwrap_or(true)
 }
 
+/// Delegates to `kiln stop`'s own implementation (`kiln_cli::commands::stop`)
+/// rather than keeping a second copy of the SIGTERM/grace-period/SIGKILL
+/// dance here - that exact duplication (this handler had it, the CLI
+/// didn't) is how this handler's copy once regressed to a SIGTERM-only
+/// version that silently did nothing.
 pub fn stop(store: &Store, id: &str) -> Response {
-    let Some(c) = Container::resolve(store, id) else {
-        return Response::text(404, "no such container");
-    };
-    let Some(pid) = c.pid else {
-        return Response::text(204, "");
-    };
-    let pid = nix::unistd::Pid::from_raw(pid);
-
-    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
-
-    // SIGTERM is not reliably enough on its own: a container's command
-    // runs as PID 1 of its own PID namespace (kiln has no separate init
-    // layer - see run.rs's module docs), and per pid_namespaces(7), a
-    // namespace's PID 1 silently discards any signal whose default
-    // action is "terminate" unless it explicitly installed a handler for
-    // that exact signal. Most commands never do that for SIGTERM, so
-    // without a fallback `stop` would report success (the kill(2) syscall
-    // itself does succeed) while the container just keeps running - which
-    // is exactly what was happening before this grace-period/SIGKILL
-    // fallback existed. `docker stop` has the identical two-step shape
-    // for the identical reason.
-    let mut exited = false;
-    for _ in 0..50 {
-        if cgroup_is_empty(&c.id) {
-            exited = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    match kiln_cli::commands::stop::stop_container(store, id) {
+        Ok(c) => Response::json(200, &to_json(c, store)),
+        Err(e) => Response::text(404, format!("{e}")),
     }
-    if !exited {
-        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
-    }
-
-    Response::text(204, "")
 }
 
 pub fn remove(store: &Store, id: &str) -> Response {
