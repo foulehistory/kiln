@@ -34,6 +34,10 @@ pub struct Service {
     /// `<volume>:<path>` entries, same syntax as `kiln run -v`.
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// `<host>:<container>[/tcp|udp]` entries, same syntax as `kiln run
+    /// -p` - see `kiln_cli::commands::network::PortSpec`.
+    #[serde(default)]
+    pub ports: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
 }

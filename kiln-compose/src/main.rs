@@ -209,6 +209,7 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
         spec.command = svc.command.clone().map(|c| c.into_vec()).unwrap_or_default();
         spec.name = Some(container_name);
         spec.volumes = svc.volumes.clone();
+        spec.ports = svc.ports.clone();
         spec.network = Some(network_name.clone());
         spec.extra_env = svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         spec.extra_hosts = hosts.clone();

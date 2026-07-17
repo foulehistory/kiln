@@ -1,0 +1,5 @@
+services:
+  chat:
+    image: chat-server:latest
+    ports:
+      - "6668:6667"
