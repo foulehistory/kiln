@@ -1,0 +1,20 @@
+[package]
+name = "kiln-compose"
+version = "0.1.0"
+edition = "2021"
+description = "kiln-compose: multi-container orchestration for Kiln, driven by a kiln.yaml file."
+license = "Apache-2.0"
+
+[[bin]]
+name = "kiln-compose"
+path = "src/main.rs"
+
+[dependencies]
+kilnd-core = { path = "../kilnd-core" }
+kiln-image = { path = "../kiln-image" }
+kiln-cli = { path = "../kiln-cli" }
+nix = { version = "0.29", features = ["process", "signal"] }
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,196 @@
+//! `kiln network` - one Linux bridge plus an `iptables` MASQUERADE rule
+//! per network, in the spirit of the project's own v1 scoping note: real
+//! per-flow observability (`kiln network inspect` showing live traffic
+//! without an external tool like `tcpdump`) is an eBPF-based v2 goal:
+//! v1 is a classic bridge + NAT setup, same as this module.
+//!
+//! Container attachment (creating a veth pair, moving one end into the
+//! container's net namespace, assigning it an IP) happens in
+//! `commands::run` via `--network <name>`, using [`NetworkConfig`] and
+//! [`attach_container`] from this module.
+
+use crate::error::{CliError, CliResult};
+use kiln_image::store::Store;
+use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    pub name: String,
+    pub bridge: String,
+    pub subnet: String,
+    pub gateway: String,
+    /// Next free host-part octet to hand out, e.g. `3` once `.1`
+    /// (gateway) and `.2` are taken. A monotonic counter, not a reclaiming
+    /// pool - simple, and fine for a /24's worth of containers.
+    pub next_host: u8,
+}
+
+fn networks_dir(store: &Store) -> PathBuf {
+    store.root().join("networks")
+}
+
+fn config_path(store: &Store, name: &str) -> PathBuf {
+    networks_dir(store).join(format!("{name}.json"))
+}
+
+impl NetworkConfig {
+    pub fn load(store: &Store, name: &str) -> Option<Self> {
+        store.read_json(&config_path(store, name)).ok()
+    }
+
+    pub fn save(&self, store: &Store) -> CliResult {
+        store.write_json(&config_path(store, &self.name), self)?;
+        Ok(())
+    }
+
+    fn subnet_prefix(&self) -> String {
+        let net = self.subnet.split('/').next().unwrap_or("172.30.0.0");
+        net.rsplit_once('.').map(|(p, _)| p.to_string()).unwrap_or_else(|| "172.30.0".to_string())
+    }
+
+    pub fn allocate_ip(&mut self) -> String {
+        let ip = format!("{}.{}", self.subnet_prefix(), self.next_host);
+        self.next_host = self.next_host.saturating_add(1);
+        ip
+    }
+}
+
+/// Bridge (and veth) names must fit `IFNAMSIZ` (16 bytes including the
+/// NUL terminator); user-chosen network/container names can be
+/// arbitrarily long, so both are derived through a short deterministic
+/// hash rather than truncated (truncation risks silent collisions between
+/// two long names sharing a prefix).
+fn short_tag(s: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
+fn bridge_name(network_name: &str) -> String {
+    format!("kb{}", short_tag(network_name))
+}
+
+fn subnet_gateway(subnet: &str) -> CliResult<String> {
+    let net = subnet.split('/').next().ok_or_else(|| CliError::msg(format!("invalid subnet {subnet:?}")))?;
+    let mut parts: Vec<&str> = net.split('.').collect();
+    if parts.len() != 4 {
+        return Err(CliError::msg(format!("invalid subnet {subnet:?}, expected a.b.c.d/nn")));
+    }
+    parts[3] = "1";
+    Ok(parts.join("."))
+}
+
+fn run_cmd(program: &str, args: &[&str]) -> CliResult {
+    let status = ProcessCommand::new(program)
+        .args(args)
+        .status()
+        .map_err(|e| CliError::msg(format!("running {program} {args:?}: {e}")))?;
+    if !status.success() {
+        return Err(CliError::msg(format!("{program} {args:?} exited with {status}")));
+    }
+    Ok(())
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum Command {
+    Create {
+        name: String,
+        #[arg(long, default_value = "172.30.0.0/24")]
+        subnet: String,
+    },
+    Ls,
+    Inspect {
+        name: String,
+    },
+    Rm {
+        name: String,
+    },
+}
+
+pub fn run(store: &Store, cmd: Command) -> CliResult {
+    match cmd {
+        Command::Create { name, subnet } => {
+            if NetworkConfig::load(store, &name).is_some() {
+                return Err(CliError::msg(format!("network {name} already exists")));
+            }
+            let bridge = bridge_name(&name);
+            let gateway = subnet_gateway(&subnet)?;
+
+            run_cmd("ip", &["link", "add", &bridge, "type", "bridge"])?;
+            run_cmd("ip", &["link", "set", &bridge, "up"])?;
+            run_cmd("ip", &["addr", "add", &format!("{gateway}/24"), "dev", &bridge])?;
+            let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
+            let _ = ProcessCommand::new("iptables")
+                .args(["-t", "nat", "-A", "POSTROUTING", "-s", &subnet, "!", "-o", &bridge, "-j", "MASQUERADE"])
+                .status();
+
+            let config = NetworkConfig { name: name.clone(), bridge, subnet, gateway, next_host: 2 };
+            std::fs::create_dir_all(networks_dir(store))?;
+            config.save(store)?;
+            println!("{name}");
+        }
+        Command::Ls => {
+            println!("{:<16}{:<16}{:<18}GATEWAY", "NAME", "BRIDGE", "SUBNET");
+            if let Ok(entries) = std::fs::read_dir(networks_dir(store)) {
+                for entry in entries.flatten() {
+                    let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                        continue;
+                    };
+                    if let Some(cfg) = NetworkConfig::load(store, &stem) {
+                        println!("{:<16}{:<16}{:<18}{}", cfg.name, cfg.bridge, cfg.subnet, cfg.gateway);
+                    }
+                }
+            }
+        }
+        Command::Inspect { name } => {
+            let cfg = NetworkConfig::load(store, &name).ok_or_else(|| CliError::msg(format!("no such network: {name}")))?;
+            println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
+        }
+        Command::Rm { name } => {
+            let cfg = NetworkConfig::load(store, &name).ok_or_else(|| CliError::msg(format!("no such network: {name}")))?;
+            let _ = run_cmd("ip", &["link", "del", &cfg.bridge]);
+            let _ = ProcessCommand::new("iptables")
+                .args(["-t", "nat", "-D", "POSTROUTING", "-s", &cfg.subnet, "!", "-o", &cfg.bridge, "-j", "MASQUERADE"])
+                .status();
+            std::fs::remove_file(config_path(store, &name))?;
+            println!("{name}");
+        }
+    }
+    Ok(())
+}
+
+/// Attach the container at `pid` to `network`: a veth pair with one end
+/// on the host bridge and the other moved into the container's own
+/// network namespace, renamed to `eth0`, given the next free IP in the
+/// network's subnet, and pointed at the bridge as its default route.
+///
+/// Must be called after the container's network namespace exists (i.e.
+/// after `spawn_paused`) but works equally whether the container process
+/// itself is still paused or already running - namespace membership, not
+/// process state, is what matters here.
+pub fn attach_container(store: &Store, network: &str, container_id: &str, pid: i32) -> CliResult<String> {
+    let mut cfg = NetworkConfig::load(store, network).ok_or_else(|| CliError::msg(format!("no such network: {network}")))?;
+    let ip = cfg.allocate_ip();
+    cfg.save(store)?;
+
+    let tag = short_tag(container_id);
+    let veth_host = format!("kv{tag}");
+    let veth_peer = format!("kp{tag}");
+    let pid_s = pid.to_string();
+
+    run_cmd("ip", &["link", "add", &veth_host, "type", "veth", "peer", "name", &veth_peer])?;
+    run_cmd("ip", &["link", "set", &veth_host, "master", &cfg.bridge])?;
+    run_cmd("ip", &["link", "set", &veth_host, "up"])?;
+    run_cmd("ip", &["link", "set", &veth_peer, "netns", &pid_s])?;
+
+    run_cmd("nsenter", &["-t", &pid_s, "-n", "ip", "link", "set", &veth_peer, "name", "eth0"])?;
+    run_cmd("nsenter", &["-t", &pid_s, "-n", "ip", "addr", "add", &format!("{ip}/24"), "dev", "eth0"])?;
+    run_cmd("nsenter", &["-t", &pid_s, "-n", "ip", "link", "set", "eth0", "up"])?;
+    run_cmd("nsenter", &["-t", &pid_s, "-n", "ip", "link", "set", "lo", "up"])?;
+    run_cmd("nsenter", &["-t", &pid_s, "-n", "ip", "route", "add", "default", "via", &cfg.gateway])?;
+
+    Ok(ip)
+}

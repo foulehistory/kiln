@@ -1,0 +1,14 @@
+[package]
+name = "kilnd-core"
+version = "0.1.0"
+edition = "2021"
+description = "Low-level Linux container runtime primitives for Kiln (namespaces, cgroups v2, overlayfs)."
+license = "Apache-2.0"
+
+[dependencies]
+nix = { version = "0.29", features = ["sched", "mount", "process", "signal", "user", "fs", "hostname", "socket", "uio"] }
+libc = "0.2"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "kilnd-core",
+    "kiln-image",
+    "kiln-cli",
+    "kiln-compose",
+    "kilnd",
+]
