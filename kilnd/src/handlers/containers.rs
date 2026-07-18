@@ -59,6 +59,65 @@ pub fn inspect(store: &Store, id: &str) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+pub struct UpdateLimitsRequest {
+    /// e.g. `"512m"`, `"1g"`, or omitted/null for unlimited - same
+    /// `commands::run::parse_size` format `RunRequest::memory` above
+    /// already uses, so the dashboard's "New container" and "Edit
+    /// limits" forms behave identically.
+    #[serde(default)]
+    pub memory: Option<String>,
+    #[serde(default)]
+    pub cpus: Option<f64>,
+}
+
+/// Changes a container's memory/CPU limits *live*, without a restart -
+/// cgroups v2's `memory.max`/`cpu.max` are ordinary files that take
+/// effect on write regardless of whether the cgroup currently has member
+/// processes (see kilnd-core::cgroups::CgroupV2::apply_limits, the same
+/// code `kiln run --memory/--cpus` uses at creation time). Also persists
+/// the new values on the container's own state so a later `kiln start`
+/// reapplies them instead of reverting to whatever was set at the
+/// original `kiln run`.
+pub fn update_limits(store: &Store, id: &str, req: &Request) -> Response {
+    let Some(mut c) = Container::resolve(store, id) else {
+        return Response::text(404, "no such container");
+    };
+    let body: UpdateLimitsRequest = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    let memory_limit_bytes = match body.memory.as_deref().map(kiln_cli::commands::run::parse_size).transpose() {
+        Ok(v) => v,
+        Err(e) => return Response::text(400, e),
+    };
+
+    let Some(cgroup_dir) = kiln_cli::cgroup::open(&c.id) else {
+        return Response::text(404, "container has no cgroup (has it ever been started?)");
+    };
+    let cgroup = kilnd_core::cgroups::CgroupV2::from_existing(cgroup_dir);
+    let limits = kilnd_core::cgroups::Limits {
+        cpu_max_us: body.cpus.map(|cpus| (cpus * 100_000.0) as u64),
+        cpu_period_us: 100_000,
+        memory_max_bytes: memory_limit_bytes,
+        // See Limits::memory_swap_max_bytes's docs - without also capping
+        // swap, a memory limit isn't really a hard cap.
+        memory_swap_max_bytes: memory_limit_bytes.map(|_| 0),
+        pids_max: None,
+    };
+    if let Err(e) = cgroup.apply_limits(&limits) {
+        return Response::text(500, format!("{e}"));
+    }
+
+    c.memory_limit_bytes = memory_limit_bytes;
+    c.cpu_limit = body.cpus;
+    if let Err(e) = c.save(store) {
+        return Response::text(500, format!("limits applied live but failed to persist for next start: {e}"));
+    }
+
+    Response::json(200, &to_json(c, store))
+}
+
 pub fn stats(store: &Store, id: &str) -> Response {
     let Some(c) = Container::resolve(store, id) else {
         return Response::text(404, "no such container");

@@ -148,6 +148,16 @@ impl CgroupV2 {
         &self.dir
     }
 
+    /// Wraps an already-existing cgroup directory (e.g. one found via a
+    /// caller's own `open`/lookup by container id) so its limits can be
+    /// changed with `apply_limits` without recreating it - unlike
+    /// `create`, this never touches the directory itself, so it's safe
+    /// to call against a *running* container's cgroup to change its
+    /// resource limits live.
+    pub fn from_existing(dir: PathBuf) -> Self {
+        CgroupV2 { dir }
+    }
+
     pub fn apply_limits(&self, limits: &Limits) -> Result<()> {
         let period = if limits.cpu_period_us == 0 {
             100_000
