@@ -49,7 +49,21 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use crate::conn::Conn;
 use crate::http::{Request, Response};
 
-pub fn handle(store: &Store, id: &str, _req: &Request, stream: &mut Conn, reader: &mut BufReader<Conn>) -> io::Result<()> {
+/// Shells this endpoint is willing to exec - an allowlist rather than
+/// trusting `?shell=` directly, since it's a query string reaching all
+/// the way into `execv` inside the container's own namespaces. No param
+/// (Settings > Terminal's "auto-detected") tries `/bin/bash` first - see
+/// the fallback to `/bin/sh` below for images that don't have it.
+const ALLOWED_SHELLS: &[&str] = &["/bin/sh", "/bin/bash"];
+
+pub fn handle(store: &Store, id: &str, req: &Request, stream: &mut Conn, reader: &mut BufReader<Conn>) -> io::Result<()> {
+    let shell = req
+        .query
+        .get("shell")
+        .map(String::as_str)
+        .filter(|s| ALLOWED_SHELLS.contains(s))
+        .unwrap_or("/bin/bash")
+        .to_string();
     let Some(mut container) = Container::resolve(store, id) else {
         return Response::text(404, "no such container").write_to(stream);
     };
@@ -113,8 +127,17 @@ pub fn handle(store: &Store, id: &str, _req: &Request, stream: &mut Conn, reader
             let _ = nix::unistd::dup2(slave_fd, 0);
             let _ = nix::unistd::dup2(slave_fd, 1);
             let _ = nix::unistd::dup2(slave_fd, 2);
-            let shell = CString::new("/bin/sh").unwrap();
-            let _ = nix::unistd::execv(&shell, &[shell.clone()]);
+            let shell_c = CString::new(shell.clone()).unwrap();
+            let _ = nix::unistd::execv(&shell_c, &[shell_c.clone()]);
+            // The requested shell doesn't exist in this image (execv only
+            // returns on failure) - /bin/sh is the one shell every image
+            // this project's tooling produces is guaranteed to have (it's
+            // busybox's own entrypoint symlink in base:latest), so it's a
+            // safe last resort rather than leaving the session dead.
+            if shell != "/bin/sh" {
+                let fallback = CString::new("/bin/sh").unwrap();
+                let _ = nix::unistd::execv(&fallback, &[fallback.clone()]);
+            }
             std::process::exit(127);
         }
         Ok(ForkResult::Parent { child }) => {

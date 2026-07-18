@@ -17,6 +17,13 @@ pub struct ContainerJson {
     pub ip: Option<String>,
     pub network: Option<String>,
     pub created_at: u64,
+    /// The `--memory`/`--cpus` this container was started with, if any -
+    /// already persisted on `Container` for `kiln start`'s benefit, just
+    /// not previously serialized here. Lets a client compare live usage
+    /// (`stats()` below) against the limit it's actually running under,
+    /// e.g. for a "near its memory limit" alert.
+    pub memory_limit_bytes: Option<u64>,
+    pub cpu_limit: Option<f64>,
 }
 
 fn to_json(mut c: Container, store: &Store) -> ContainerJson {
@@ -35,6 +42,8 @@ fn to_json(mut c: Container, store: &Store) -> ContainerJson {
         ip: c.ip,
         network: c.network,
         created_at: c.created_at,
+        memory_limit_bytes: c.memory_limit_bytes,
+        cpu_limit: c.cpu_limit,
     }
 }
 
