@@ -1,8 +1,9 @@
-use crate::http::Response;
+use crate::http::{Request, Response};
 use kiln_image::image::Image;
 use kiln_image::layer::{EntryKind, LayerManifest};
+use kiln_image::registry;
 use kiln_image::store::{Hash, Store};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 #[derive(Serialize)]
@@ -55,6 +56,30 @@ fn image_json(store: &Store, id: Hash, repository: Option<String>, tag: Option<S
     }
 
     ImageJson { id: id.to_string(), repository, tag, layers, size_bytes }
+}
+
+#[derive(Deserialize)]
+pub struct PullRequest {
+    pub reference: String,
+}
+
+/// Blocks the request's own connection thread for the duration of the
+/// pull (there's no progress-streaming here, just a plain response once
+/// it's done or failed) - fine because `server.rs` gives every connection
+/// its own thread, so a slow pull never blocks other endpoints (container
+/// listing, stats polling, etc.) running on other connections meanwhile.
+pub fn pull(store: &Store, req: &Request) -> Response {
+    let body: PullRequest = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    if body.reference.trim().is_empty() {
+        return Response::text(400, "image reference must not be empty");
+    }
+    match registry::pull(store, &body.reference) {
+        Ok(id) => Response::json(201, &serde_json::json!({ "id": id.to_string() })),
+        Err(e) => Response::text(502, format!("{e}")),
+    }
 }
 
 pub fn remove(store: &Store, id: &str) -> Response {
