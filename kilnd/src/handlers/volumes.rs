@@ -12,6 +12,31 @@ pub struct VolumeJson {
     /// delete, surfaced here so the dashboard can do the same "in use, so
     /// disable Remove" check `NetworksView` already does for networks.
     pub containers: Vec<String>,
+    /// Total size of every file under the volume - deliberately not
+    /// deduped/cached like the image store's blobs (`images::image_json`)
+    /// since a volume is just a plain directory a container writes to
+    /// directly, not content-addressed storage.
+    pub size_bytes: u64,
+    /// Absolute path *inside kilnd's own filesystem* (i.e. inside WSL2,
+    /// not a Windows path) - the dashboard's Electron main process
+    /// translates this into a `\\wsl.localhost\<distro>\...` UNC path to
+    /// open it in Explorer, since kilnd has no notion of "the Windows
+    /// side" at all.
+    pub host_path: String,
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            total += dir_size(&entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    total
 }
 
 pub fn list(store: &Store) -> Response {
@@ -28,7 +53,10 @@ pub fn list(store: &Store) -> Response {
             .filter(|c| c.volumes.iter().any(|v| v.split_once(':').map(|(n, _)| n) == Some(name.as_str())))
             .map(|c| c.name.clone())
             .collect();
-        out.push(VolumeJson { name, containers });
+        let path = entry.path();
+        let size_bytes = dir_size(&path);
+        let host_path = path.to_string_lossy().into_owned();
+        out.push(VolumeJson { name, containers, size_bytes, host_path });
     }
 
     Response::json(200, &out)

@@ -1,6 +1,6 @@
 [package]
 name = "kiln-compose"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "kiln-compose: multi-container orchestration for Kiln, driven by a kiln.yaml file."
 license = "Apache-2.0"
