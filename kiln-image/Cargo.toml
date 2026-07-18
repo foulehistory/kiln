@@ -1,6 +1,6 @@
 [package]
 name = "kiln-image"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Content-addressed image format, Kilnfile builder, and OCI registry client for Kiln."
 license = "Apache-2.0"

@@ -72,8 +72,33 @@ impl Request {
     }
 }
 
+/// RFC 3986 percent-decoding (`%XX` -> that byte) - deliberately not
+/// `application/x-www-form-urlencoded` decoding, so `+` stays a literal
+/// `+` rather than becoming a space (that convention is specific to form
+/// bodies, not URI query strings in general).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn parse_query(q: &str) -> HashMap<String, String> {
-    q.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    q.split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
+        .collect()
 }
 
 pub struct Response {

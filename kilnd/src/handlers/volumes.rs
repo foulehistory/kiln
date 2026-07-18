@@ -25,20 +25,6 @@ pub struct VolumeJson {
     pub host_path: String,
 }
 
-fn dir_size(path: &std::path::Path) -> u64 {
-    let mut total = 0u64;
-    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
-    for entry in entries.flatten() {
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_dir() {
-            total += dir_size(&entry.path());
-        } else {
-            total += meta.len();
-        }
-    }
-    total
-}
-
 pub fn list(store: &Store) -> Response {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(volume::volumes_dir(store)) else {
@@ -54,7 +40,7 @@ pub fn list(store: &Store) -> Response {
             .map(|c| c.name.clone())
             .collect();
         let path = entry.path();
-        let size_bytes = dir_size(&path);
+        let size_bytes = crate::handlers::dir_size(&path);
         let host_path = path.to_string_lossy().into_owned();
         out.push(VolumeJson { name, containers, size_bytes, host_path });
     }
@@ -85,5 +71,95 @@ pub fn remove(store: &Store, name: &str) -> Response {
     match volume::run(store, volume::Command::Rm { name: name.to_string() }) {
         Ok(()) => Response::json(200, &serde_json::json!({ "ok": true })),
         Err(e) => Response::text(404, format!("{e}")),
+    }
+}
+
+/// Resolves a `?path=` query param (a path *relative to the volume
+/// root*) into a real filesystem path, refusing anything that would
+/// escape the volume: `..` components are rejected outright, and - since
+/// a volume's contents come from whatever a container wrote there, which
+/// could include a symlink - the final resolved path is canonicalized
+/// and checked to still be inside the volume, catching a symlink escape
+/// a plain `..` check alone wouldn't.
+fn resolve_within_volume(store: &Store, volume_name: &str, rel_path: &str) -> Option<std::path::PathBuf> {
+    let base = volume::path(store, volume_name);
+    if !base.is_dir() {
+        return None;
+    }
+    let mut resolved = base.clone();
+    for component in rel_path.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            return None;
+        }
+        resolved.push(component);
+    }
+    if resolved.exists() {
+        let base_canon = base.canonicalize().ok()?;
+        let resolved_canon = resolved.canonicalize().ok()?;
+        if !resolved_canon.starts_with(&base_canon) {
+            return None;
+        }
+    }
+    Some(resolved)
+}
+
+#[derive(Serialize)]
+pub struct FileEntryJson {
+    pub name: String,
+    pub is_dir: bool,
+    pub size_bytes: u64,
+}
+
+pub fn list_files(store: &Store, name: &str, req: &Request) -> Response {
+    let rel = req.query.get("path").map(String::as_str).unwrap_or("");
+    let Some(dir) = resolve_within_volume(store, name, rel) else {
+        return Response::text(400, "invalid path");
+    };
+    if !dir.is_dir() {
+        return Response::text(404, "not a directory");
+    }
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            out.push(FileEntryJson {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                is_dir: meta.is_dir(),
+                size_bytes: if meta.is_dir() { 0 } else { meta.len() },
+            });
+        }
+    }
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
+    Response::json(200, &out)
+}
+
+/// A preview, not a download: capped well below anything that would be
+/// awkward to render inline, and only for content that's actually valid
+/// UTF-8 text (binary files are reported as such rather than dumped).
+const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
+
+pub fn read_file(store: &Store, name: &str, req: &Request) -> Response {
+    let rel = req.query.get("path").map(String::as_str).unwrap_or("");
+    let Some(path) = resolve_within_volume(store, name, rel) else {
+        return Response::text(400, "invalid path");
+    };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return Response::text(404, "not found");
+    };
+    if !meta.is_file() {
+        return Response::text(404, "not a file");
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Response::text(413, format!("file too large to preview (>{} KiB)", MAX_PREVIEW_BYTES / 1024));
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => Response::text(200, text),
+            Err(_) => Response::text(415, "binary file - not previewable"),
+        },
+        Err(e) => Response::text(500, format!("{e}")),
     }
 }

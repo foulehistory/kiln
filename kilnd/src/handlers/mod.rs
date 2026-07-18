@@ -2,12 +2,31 @@ pub mod containers;
 pub mod exec;
 pub mod images;
 pub mod networks;
+pub mod system;
 pub mod volumes;
 
 use crate::conn::Conn;
 use crate::http::{Request, Response};
 use kiln_image::store::Store;
 use std::io::{self, BufReader};
+
+/// Recursively sums file sizes under `path` - shared by `volumes::list`
+/// (per-volume size) and `system::disk_usage` (per-directory totals).
+/// Best-effort: an unreadable entry just doesn't count toward the total
+/// rather than failing the whole request.
+pub(crate) fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(path) else { return 0 };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            total += dir_size(&entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    total
+}
 
 pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufReader<Conn>) -> io::Result<()> {
     let segments: Vec<&str> = req.path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
@@ -34,6 +53,10 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("GET", ["volumes"]) => volumes::list(store).write_to(stream),
         ("POST", ["volumes"]) => volumes::create(store, req).write_to(stream),
         ("DELETE", ["volumes", name]) => volumes::remove(store, name).write_to(stream),
+        ("GET", ["volumes", name, "files"]) => volumes::list_files(store, name, req).write_to(stream),
+        ("GET", ["volumes", name, "files", "content"]) => volumes::read_file(store, name, req).write_to(stream),
+        ("GET", ["disk-usage"]) => system::disk_usage(store).write_to(stream),
+        ("POST", ["gc"]) => system::gc(store).write_to(stream),
         _ => Response::text(404, "not found").write_to(stream),
     }
 }
