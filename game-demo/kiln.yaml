@@ -1,0 +1,7 @@
+services:
+  arena:
+    image: game-server:latest
+    volumes:
+      - "arena-data:/data"
+    ports:
+      - "7001:7000"

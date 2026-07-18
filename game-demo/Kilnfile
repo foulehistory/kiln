@@ -1,0 +1,4 @@
+FROM base:latest
+COPY bin/game-server /usr/local/bin/game-server
+EXPOSE 7000
+CMD /usr/local/bin/game-server 7000
