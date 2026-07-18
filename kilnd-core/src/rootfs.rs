@@ -196,3 +196,72 @@ pub fn bind_mount(src: &Path, dest: &Path) -> Result<()> {
     mount(Some(src), dest, None::<&str>, MsFlags::MS_BIND | MsFlags::MS_REC, None::<&str>)
         .map_err(error::syscall("mount(bind volume)"))
 }
+
+/// The handful of device nodes almost every real program assumes exist
+/// and work - not an attempt at a complete `/dev`.
+const STANDARD_DEVICES: &[&str] = &["null", "zero", "full", "random", "urandom", "tty"];
+
+/// `(link, target)` pairs mirroring every mainstream container runtime's
+/// default `/dev` population - `/dev/fd` and friends are how shell
+/// process substitution (`<(...)`) and `/dev/std{in,out,err}` redirects
+/// work, both common enough in real entrypoint scripts (MySQL's own
+/// among them) that a container without them fails in confusing,
+/// script-specific ways rather than a clean "no such file".
+const STANDARD_DEV_SYMLINKS: &[(&str, &str)] =
+    &[("fd", "/proc/self/fd"), ("stdin", "/proc/self/fd/0"), ("stdout", "/proc/self/fd/1"), ("stderr", "/proc/self/fd/2")];
+
+/// Populate the container's `/dev` with the bare minimum every real
+/// program assumes exists and works - not an attempt at a complete
+/// `/dev`: the standard device nodes (bind-mounted from the host) plus
+/// the standard `/proc/self/fd`-based symlinks.
+///
+/// The device nodes look redundant with `kiln-image`'s `EntryKind::Device`
+/// (which faithfully materializes whatever device nodes an image's own
+/// layers bake in, e.g. Debian-derived images' static `/dev/null`) - it
+/// isn't. Every Kiln container's overlay is mounted from *inside* its own
+/// freshly-created user namespace, and the kernel unconditionally forces
+/// `MS_NODEV` onto any filesystem mounted by a process that lacks
+/// `CAP_SYS_ADMIN` in the *initial* user namespace (`mount_namespaces(7)`)
+/// - full capabilities inside our own nested namespace never count for
+/// this check. That makes every device node an image's layers provide
+/// permanently inert (`open()` fails with `EACCES` regardless of mode
+/// bits) no matter how faithfully it was materialized. Every other
+/// container runtime works around this the same way: bind-mount the
+/// host's own, already-functional device nodes over the image's inert
+/// ones. Best-effort for the devices - a host missing one of these
+/// (rare) just leaves the image's own, non-functional node in place
+/// rather than failing the whole container start; the symlinks always
+/// succeed since they don't depend on anything about the host.
+///
+/// Must be called **before** [`pivot_root_into`], same as [`bind_mount`] -
+/// the symlinks' targets don't need to exist yet (nothing resolves them
+/// until well after `/proc` is mounted, later in container startup), but
+/// the bind mounts do need the pre-pivot host `/dev` to still be reachable.
+pub fn bind_mount_host_devices(merged_dir: &Path) -> Result<()> {
+    let dev_dir = merged_dir.join("dev");
+    fs::create_dir_all(&dev_dir).map_err(error::io(&dev_dir))?;
+
+    for name in STANDARD_DEVICES {
+        let host_path = Path::new("/dev").join(name);
+        if !host_path.exists() {
+            continue;
+        }
+        let target = dev_dir.join(name);
+        // Standard container-runtime convention: bind-mount onto a
+        // fresh, empty regular file, discarding whatever the image's own
+        // layers may have already placed there (typically the
+        // non-functional device-special file described above).
+        let _ = fs::remove_file(&target);
+        fs::File::create(&target).map_err(error::io(&target))?;
+        mount(Some(&host_path), &target, None::<&str>, MsFlags::MS_BIND, None::<&str>)
+            .map_err(error::syscall("mount(bind device)"))?;
+    }
+
+    for (name, dest) in STANDARD_DEV_SYMLINKS {
+        let target = dev_dir.join(name);
+        let _ = fs::remove_file(&target);
+        std::os::unix::fs::symlink(dest, &target).map_err(error::io(&target))?;
+    }
+
+    Ok(())
+}

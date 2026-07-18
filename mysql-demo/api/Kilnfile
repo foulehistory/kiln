@@ -1,0 +1,11 @@
+FROM python:3.12-alpine
+COPY vendor /vendor
+COPY server.py /server.py
+ENV DB_HOST mysql
+ENV DB_PORT 3306
+ENV DB_USER demo
+ENV DB_PASSWORD demo
+ENV DB_NAME kiln_demo
+ENV LISTEN_PORT 8081
+EXPOSE 8081/tcp
+CMD python3 /server.py

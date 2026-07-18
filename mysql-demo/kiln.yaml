@@ -1,0 +1,19 @@
+services:
+  mysql:
+    image: mysql:8.0
+    # Kiln does not (yet) read an image's OCI `Entrypoint`, only `Cmd` -
+    # the official mysql image relies on ENTRYPOINT
+    # docker-entrypoint.sh to do first-boot datadir initialization before
+    # ever launching mysqld itself, so it must be named explicitly here.
+    command: ["docker-entrypoint.sh", "mysqld"]
+    environment:
+      MYSQL_ROOT_PASSWORD: demo
+      MYSQL_DATABASE: kiln_demo
+      MYSQL_USER: demo
+      MYSQL_PASSWORD: demo
+  api:
+    build: ./api
+    depends_on:
+      - mysql
+    ports:
+      - "8081:8081"

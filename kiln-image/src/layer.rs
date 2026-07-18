@@ -66,6 +66,20 @@ pub enum EntryKind {
     /// An overlayfs-native whiteout: this path is deleted relative to
     /// whatever lower layers are stacked underneath.
     Whiteout,
+    /// A real device node (`/dev/console`, `/dev/null`, ...) baked into an
+    /// image's own layers. Kiln containers get no `/dev` of their own -
+    /// there's no `mount_dev`-equivalent setup anywhere in this project -
+    /// so whatever a base image's layers provide here is the *only* `/dev`
+    /// a container ever gets. Faithfully preserving these (instead of
+    /// erroring out, or worse, silently dropping them) is what makes
+    /// glibc-based images - which very commonly ship a handful of static
+    /// `/dev` entries from their own build process - actually runnable.
+    Device { char_device: bool, major: u64, minor: u64 },
+    /// A named pipe (FIFO) baked into an image's own layers - same
+    /// reasoning as `Device` above (e.g. Debian's sysvinit-derived images
+    /// still ship a static `/dev/initctl` FIFO from their own build
+    /// process, though nothing in a Kiln container ever reads it).
+    Fifo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -121,6 +135,16 @@ impl LayerManifest {
 
 fn path_to_entry_string(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
+}
+
+/// The inverse of [`nix::sys::stat::makedev`] - glibc's `gnu_dev_major`/
+/// `gnu_dev_minor` bit layout (not the older, narrower 8+8 bit split),
+/// needed because `std::fs::Metadata::rdev` hands back the raw encoded
+/// value with no decomposition of its own.
+fn split_dev(dev: u64) -> (u64, u64) {
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    (major, minor)
 }
 
 const OPAQUE_XATTR: &[u8] = b"trusted.overlay.opaque\0";
@@ -185,7 +209,9 @@ pub fn snapshot_dir(root: &Path, store: &Store, uid_base: u32, gid_base: u32) ->
         let gid = identity::host_to_container(meta.gid(), gid_base);
         let file_type = meta.file_type();
 
-        let kind = if file_type.is_symlink() {
+        let kind = if file_type.is_fifo() {
+            EntryKind::Fifo
+        } else if file_type.is_symlink() {
             let target = fs::read_link(path).map_err(Error::io(path))?;
             EntryKind::Symlink {
                 target: path_to_entry_string(&target),
@@ -197,6 +223,9 @@ pub fn snapshot_dir(root: &Path, store: &Store, uid_base: u32, gid_base: u32) ->
         } else if file_type.is_char_device() && meta.rdev() == 0 {
             // major 0, minor 0: overlayfs's own whiteout marker.
             EntryKind::Whiteout
+        } else if file_type.is_char_device() || file_type.is_block_device() {
+            let (major, minor) = split_dev(meta.rdev());
+            EntryKind::Device { char_device: file_type.is_char_device(), major, minor }
         } else if file_type.is_file() {
             let blob = store.put_file(path)?;
             EntryKind::File {
@@ -258,6 +287,28 @@ pub fn materialize(manifest: &LayerManifest, store: &Store, dest: &Path, uid_bas
             EntryKind::Whiteout => {
                 mknod(&target, SFlag::S_IFCHR, Mode::empty(), makedev(0, 0))
                     .map_err(Error::syscall("mknod(whiteout)", &target))?;
+            }
+            EntryKind::Device { char_device, major, minor } => {
+                let sflag = if *char_device { SFlag::S_IFCHR } else { SFlag::S_IFBLK };
+                // The mode passed to mknod(2) is masked by the calling
+                // process's umask, same as open()/mkdir() - harmless for
+                // the Whiteout case above (mode 0000 either way), but a
+                // real device's mode (e.g. /dev/null's usual 0666) can
+                // silently lose bits (0666 under a 022 umask becomes
+                // 0644, dropping the write-for-group/other that plenty of
+                // programs - a docker-entrypoint.sh redirecting output to
+                // /dev/null, say - actually rely on). Fix it up explicitly
+                // afterward, exactly like the Dir/File branches above do.
+                mknod(&target, sflag, Mode::from_bits_truncate(entry.mode), makedev(*major, *minor))
+                    .map_err(Error::syscall("mknod(device)", &target))?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(entry.mode)).map_err(Error::io(&target))?;
+                chown(&target, host_uid, host_gid)?;
+            }
+            EntryKind::Fifo => {
+                mknod(&target, SFlag::S_IFIFO, Mode::from_bits_truncate(entry.mode), 0)
+                    .map_err(Error::syscall("mknod(fifo)", &target))?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(entry.mode)).map_err(Error::io(&target))?;
+                chown(&target, host_uid, host_gid)?;
             }
         }
     }

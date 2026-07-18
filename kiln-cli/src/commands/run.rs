@@ -21,7 +21,7 @@ use kiln_image::image::Image;
 use kiln_image::layer;
 use kiln_image::store::Store;
 use kilnd_core::namespaces::Spawn;
-use kilnd_core::rootfs::{make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
+use kilnd_core::rootfs::{bind_mount_host_devices, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -445,6 +445,7 @@ fn run_container_init(
         let target = merged.join(container_path.trim_start_matches('/'));
         kilnd_core::rootfs::bind_mount(host_path, &target)?;
     }
+    bind_mount_host_devices(merged)?;
 
     pivot_root_into(merged)?;
     mount_proc(Path::new("/proc"))?;

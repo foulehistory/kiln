@@ -453,6 +453,26 @@ fn pull_layer(store: &Store, base_url: &str, repository: &str, digest: &str, tok
                 });
                 path_to_blob.insert(raw_path, (blob, size));
             }
+            tar::EntryType::Char | tar::EntryType::Block => {
+                // Device nodes baked into a base image's own layers (e.g.
+                // Debian's official images ship a handful of static
+                // /dev/* entries from their own build process) - see
+                // layer.rs's EntryKind::Device docs for why these must be
+                // preserved rather than skipped: Kiln containers get no
+                // /dev of their own beyond whatever the image provides.
+                let major = entry.header().device_major().map_err(|e| Error::Registry(format!("layer {digest}: reading device major for {raw_path:?}: {e}")))?.unwrap_or(0);
+                let minor = entry.header().device_minor().map_err(|e| Error::Registry(format!("layer {digest}: reading device minor for {raw_path:?}: {e}")))?.unwrap_or(0);
+                entries.push(Entry {
+                    path: raw_path,
+                    mode,
+                    uid,
+                    gid,
+                    kind: EntryKind::Device { char_device: entry_type == tar::EntryType::Char, major: major as u64, minor: minor as u64 },
+                });
+            }
+            tar::EntryType::Fifo => {
+                entries.push(Entry { path: raw_path, mode, uid, gid, kind: EntryKind::Fifo });
+            }
             tar::EntryType::XGlobalHeader | tar::EntryType::XHeader => {
                 // Pax extension headers carry no filesystem entry of
                 // their own; the `tar` crate already folds the metadata
@@ -715,6 +735,24 @@ fn pack_layer_tar_gz(store: &Store, manifest: &LayerManifest) -> Result<Vec<u8>>
                 builder
                     .append_data(&mut header, wh_path, std::io::empty())
                     .map_err(|e| Error::Registry(format!("packing whiteout {}: {e}", entry.path)))?;
+            }
+            EntryKind::Device { char_device, major, minor } => {
+                header.set_entry_type(if *char_device { tar::EntryType::Char } else { tar::EntryType::Block });
+                header.set_device_major(*major as u32).map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
+                header.set_device_minor(*minor as u32).map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
+                header.set_size(0);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, &entry.path, std::io::empty())
+                    .map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
+            }
+            EntryKind::Fifo => {
+                header.set_entry_type(tar::EntryType::Fifo);
+                header.set_size(0);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, &entry.path, std::io::empty())
+                    .map_err(|e| Error::Registry(format!("packing fifo {}: {e}", entry.path)))?;
             }
             EntryKind::File { blob, size } => {
                 if let Some(first_path) = blob_to_path.get(blob) {

@@ -56,7 +56,7 @@ use crate::kilnfile::{self, Instruction};
 use crate::layer::{self, Entry, EntryKind, LayerManifest};
 use crate::store::{Hash, Store};
 use kilnd_core::namespaces::{spawn_isolated, Spawn};
-use kilnd_core::rootfs::{make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
+use kilnd_core::rootfs::{bind_mount_host_devices, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -427,6 +427,7 @@ fn run_command_in_container(
 
     make_mounts_private()?;
     mount_overlay(overlay)?;
+    bind_mount_host_devices(merged)?;
     pivot_root_into(merged)?;
     mount_proc(Path::new("/proc"))?;
 
