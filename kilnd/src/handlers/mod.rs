@@ -47,6 +47,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("GET", ["containers", id, "exec"]) if req.is_upgrade_to("kiln-exec") => exec::handle(store, id, req, stream, reader),
         ("GET", ["images"]) => images::list(store).write_to(stream),
         ("POST", ["images", "pull"]) => images::pull(store, req).write_to(stream),
+        ("GET", ["images", id]) => images::inspect(store, id).write_to(stream),
         ("DELETE", ["images", id]) => images::remove(store, id).write_to(stream),
         ("GET", ["networks"]) => networks::list(store).write_to(stream),
         ("POST", ["networks"]) => networks::create(store, req).write_to(stream),

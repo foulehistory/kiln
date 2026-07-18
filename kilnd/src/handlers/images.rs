@@ -58,6 +58,82 @@ fn image_json(store: &Store, id: Hash, repository: Option<String>, tag: Option<S
     ImageJson { id: id.to_string(), repository, tag, layers, size_bytes }
 }
 
+#[derive(Serialize)]
+pub struct LayerDetailJson {
+    pub hash: String,
+    pub entry_count: usize,
+    /// Sum of this layer's *own* file sizes - unlike `ImageJson::size_bytes`
+    /// above, not deduped against the image's other layers (a per-layer
+    /// breakdown wouldn't mean much deduped against its neighbors), so
+    /// these can add up to more than the image's own total.
+    pub size_bytes: u64,
+}
+
+#[derive(Serialize)]
+pub struct ImageDetailJson {
+    pub id: String,
+    pub repository: Option<String>,
+    pub tag: Option<String>,
+    pub env: Vec<(String, String)>,
+    pub cmd: Option<String>,
+    pub workdir: String,
+    pub exposed_ports: Vec<(u16, String)>,
+    /// Base-to-top, matching `Image::layers`' own order. There is no
+    /// build *history* here (which Kilnfile instruction produced which
+    /// layer) - kiln-image's format deliberately never records that (see
+    /// layer.rs's "reproducibility by omission" docs: no instruction
+    /// text, no timestamps, nothing that isn't actual file content/
+    /// metadata) - so this is only ever the layer stack itself.
+    pub layers: Vec<LayerDetailJson>,
+}
+
+pub fn inspect(store: &Store, id: &str) -> Response {
+    let Ok(hash) = Hash::from_hex(id) else {
+        return Response::text(400, format!("invalid image id: {id}"));
+    };
+    let Ok(img) = Image::load(store, &hash) else {
+        return Response::text(404, "no such image");
+    };
+
+    let mut repository = None;
+    let mut tag = None;
+    for (r, t, tagged_id) in store.all_tags() {
+        if tagged_id == hash {
+            repository = Some(r);
+            tag = Some(t);
+            break;
+        }
+    }
+
+    let layers = img
+        .layers
+        .iter()
+        .map(|layer_id| {
+            let manifest = LayerManifest::load(store, layer_id).ok();
+            let entry_count = manifest.as_ref().map(|m| m.entries.len()).unwrap_or(0);
+            let size_bytes = manifest
+                .as_ref()
+                .map(|m| m.entries.iter().filter_map(|e| if let EntryKind::File { size, .. } = &e.kind { Some(*size) } else { None }).sum())
+                .unwrap_or(0);
+            LayerDetailJson { hash: layer_id.to_string(), entry_count, size_bytes }
+        })
+        .collect();
+
+    Response::json(
+        200,
+        &ImageDetailJson {
+            id: hash.to_string(),
+            repository,
+            tag,
+            env: img.config.env,
+            cmd: img.config.cmd,
+            workdir: img.config.workdir,
+            exposed_ports: img.config.exposed_ports,
+            layers,
+        },
+    )
+}
+
 #[derive(Deserialize)]
 pub struct PullRequest {
     pub reference: String,
