@@ -17,3 +17,15 @@ services:
       - mysql
     ports:
       - "8081:8081"
+  # A real web UI for MySQL - browsers don't speak MySQL's wire protocol,
+  # so this is how "open MySQL in a browser" actually works: Adminer is
+  # a PHP app that speaks MySQL on its backend and serves an HTTP login
+  # form/browser on its frontend. Its image's own Cmd already starts
+  # PHP's built-in server on 8080 - no entrypoint override needed here,
+  # unlike the mysql service above.
+  adminer:
+    image: adminer:latest
+    depends_on:
+      - mysql
+    ports:
+      - "8082:8080"
