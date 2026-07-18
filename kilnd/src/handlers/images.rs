@@ -158,6 +158,108 @@ pub fn pull(store: &Store, req: &Request) -> Response {
     }
 }
 
+#[derive(Deserialize)]
+pub struct PushRequest {
+    /// Local image reference to push, e.g. `myapp:latest` or a bare id -
+    /// pushed to the registry under this same name, exactly like `kiln
+    /// push` itself.
+    pub reference: String,
+}
+
+pub fn push(store: &Store, req: &Request) -> Response {
+    let body: PushRequest = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    let image = match kiln_image::image::Image::resolve(store, &body.reference) {
+        Ok(i) => i,
+        Err(e) => return Response::text(404, format!("resolving {}: {e}", body.reference)),
+    };
+    let id = match image.save(store) {
+        Ok(id) => id,
+        Err(e) => return Response::text(500, format!("{e}")),
+    };
+    match registry::push(store, &id, &body.reference) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "id": id.to_string(), "pushed_as": body.reference })),
+        Err(e) => Response::text(502, format!("push failed: {e}")),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct BuildRequest {
+    /// Absolute path *inside kilnd's own filesystem* (i.e. WSL2, not a
+    /// Windows path) - same "kilnd only knows its own side" pattern as
+    /// volumes' host_path. The dashboard translates a Windows folder the
+    /// user picked (via a native folder-select dialog) into its
+    /// `/mnt/<drive>/...` WSL2-visible equivalent before sending this.
+    pub context_dir: String,
+    /// Relative to `context_dir`, defaults to `"Kilnfile"` - same as
+    /// `kiln build -f`.
+    #[serde(default)]
+    pub kilnfile_path: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BuildStepJson {
+    pub instruction: String,
+    pub cached: bool,
+}
+
+#[derive(Serialize)]
+pub struct BuildResultJson {
+    pub image_id: String,
+    pub steps: Vec<BuildStepJson>,
+    pub tagged: Option<String>,
+}
+
+/// Same connection-gets-its-own-thread reasoning as `pull` above applies
+/// here too - a build can take a while (uncached RUN steps actually
+/// execute), and this blocks only its own request.
+pub fn build(store: &Store, req: &Request) -> Response {
+    let body: BuildRequest = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    let context_dir = std::path::PathBuf::from(&body.context_dir);
+    if !context_dir.is_dir() {
+        return Response::text(400, format!("context directory not found: {}", body.context_dir));
+    }
+    let kilnfile_path = match &body.kilnfile_path {
+        Some(p) => context_dir.join(p),
+        None => context_dir.join("Kilnfile"),
+    };
+    let source = match std::fs::read_to_string(&kilnfile_path) {
+        Ok(s) => s,
+        Err(e) => return Response::text(400, format!("reading {}: {e}", kilnfile_path.display())),
+    };
+
+    let output = match kiln_image::build::build(store, &context_dir, &source) {
+        Ok(o) => o,
+        Err(e) => return Response::text(500, format!("build failed: {e}")),
+    };
+
+    let mut tagged = None;
+    if let Some(tag) = &body.tag {
+        let (name, tag_name) = kiln_image::image::split_name_tag(tag);
+        let repo = kiln_image::image::normalize_repository(name);
+        if let Err(e) = store.tag(&repo, tag_name, output.image_id) {
+            return Response::text(500, format!("built {} but tagging failed: {e}", output.image_id));
+        }
+        tagged = Some(format!("{repo}:{tag_name}"));
+    }
+
+    Response::json(
+        201,
+        &BuildResultJson {
+            image_id: output.image_id.to_string(),
+            steps: output.steps.into_iter().map(|s| BuildStepJson { instruction: s.instruction, cached: s.cached }).collect(),
+            tagged,
+        },
+    )
+}
+
 pub fn remove(store: &Store, id: &str) -> Response {
     let Ok(hash) = Hash::from_hex(id) else {
         return Response::text(400, format!("invalid image id: {id}"));
