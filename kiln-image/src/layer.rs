@@ -283,6 +283,40 @@ pub fn materialize(manifest: &LayerManifest, store: &Store, dest: &Path, uid_bas
             }
             EntryKind::Symlink { target: link_target } => {
                 std::os::unix::fs::symlink(link_target, &target).map_err(Error::io(&target))?;
+                // Every other entry kind above is explicitly chowned into
+                // the container's mapped range; a symlink, uniquely,
+                // wasn't - std::os::unix::fs::symlink creates it owned by
+                // whoever's actually calling materialize() (real host
+                // root, since this runs on the host side), which is
+                // *outside* any container's own uid_map range. From
+                // inside the container, the kernel reports an inode owned
+                // by a uid outside your namespace's mapped range as the
+                // "overflow" uid - conventionally 65534 ("nobody") - which
+                // is indistinguishable from a *real* nobody-owned file to
+                // anything running inside. That's harmless for most
+                // symlinks, but the kernel's protected_symlinks hardening
+                // (`fs.protected_symlinks=1`, the modern default) refuses
+                // to follow a symlink inside a sticky, world-writable
+                // directory unless the follower's uid matches the
+                // symlink's owner or the directory's - "owned by an
+                // unrelated uid nobody asked for" was never a real
+                // ownership decision worth preserving here, so lchown-ing
+                // it into the container's own mapped root (using
+                // fchownat's NoFollowSymlink flag, since a plain chown()
+                // would instead - and wrongly - chase the symlink and
+                // touch whatever it points at) is what makes e.g.
+                // Debian-packaged Apache's /var/log/apache2/error.log ->
+                // /dev/stderr actually followable as the container's own
+                // root, matching what real (non-rootless) root already
+                // gets for free via unrestricted CAP_FOWNER.
+                nix::unistd::fchownat(
+                    None,
+                    &target,
+                    Some(Uid::from_raw(host_uid)),
+                    Some(Gid::from_raw(host_gid)),
+                    nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+                )
+                .map_err(Error::syscall("lchown(symlink)", &target))?;
             }
             EntryKind::Whiteout => {
                 mknod(&target, SFlag::S_IFCHR, Mode::empty(), makedev(0, 0))

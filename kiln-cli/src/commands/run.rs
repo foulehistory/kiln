@@ -272,6 +272,19 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
     let log_path = Container::log_path(store, &id);
     let log_file = fs::File::create(&log_path).map_err(|e| CliError::msg(format!("creating log file: {e}")))?;
     let log_fd: RawFd = log_file.as_raw_fd();
+    // Created here, by this host-side process (real root), so it's
+    // host-root-owned (0644) by default - fine for the fd this process
+    // itself already has open and dup2's into the child, but the
+    // container's own mapped identity (uid_base on the host, not real
+    // root) is a different, unprivileged uid. Any program inside the
+    // container that path-opens /dev/stdout, /dev/stderr, or /dev/fd/{0,1,2}
+    // (all symlinks to /proc/self/fd/N - see bind_mount_host_devices)
+    // triggers a fresh permission check against this file's real on-disk
+    // owner, which the already-open fd's own access mode has no bearing
+    // on. Chowning it to the container's own mapped uid/gid is what makes
+    // that re-open succeed - the same reasoning already applied to a
+    // container's overlay upper/work dirs (see build.rs's execute_run).
+    super::chown(&log_path, uid_base, gid_base)?;
 
     let mut env = image.config.env.clone();
     env.extend(spec.extra_env.iter().cloned());
