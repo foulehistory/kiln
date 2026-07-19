@@ -480,6 +480,24 @@ fn run_container_init(
         .map(|s| CString::new(s.as_str()).map_err(|e| RtError::InvalidArgument(format!("command has a NUL byte: {e}"))))
         .collect::<kilnd_core::Result<_>>()?;
 
+    // Rust's runtime sets SIGPIPE to SIG_IGN at startup (so this process's
+    // own write()s return an EPIPE Result instead of dying by signal) -
+    // and unlike a handler function, a SIG_IGN disposition survives
+    // execve(2) unchanged. Left alone, that means every container's
+    // command inherits SIGPIPE-ignored from kiln's own process, silently
+    // different from how it would behave run natively. Most programs
+    // don't care (they check write()'s return value), but some very much
+    // do: e.g. a multi-stage shell pipeline where an upstream tool is
+    // expected to be killed by SIGPIPE once a downstream `head -n1` exits
+    // early - with the signal ignored, that upstream tool never receives
+    // the signal that would otherwise end it, and neither does whatever
+    // sits between them still trying to write into an unread pipe -
+    // hanging a pipeline that would terminate in half a second natively.
+    unsafe {
+        nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
+            .map_err(|e| RtError::InvalidArgument(format!("resetting SIGPIPE: {e}")))?;
+    }
+
     nix::unistd::execvp(&args[0], &args).map_err(|e| RtError::InvalidArgument(format!("execvp({:?}): {e}", command[0])))?;
     unreachable!("execvp only returns on error, which is handled above")
 }

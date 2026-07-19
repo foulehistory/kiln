@@ -1,13 +1,13 @@
 [package]
 name = "kiln-image"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 description = "Content-addressed image format, Kilnfile builder, and OCI registry client for Kiln."
 license = "Apache-2.0"
 
 [dependencies]
 kilnd-core = { path = "../kilnd-core" }
-nix = { version = "0.29", features = ["fs", "process", "user"] }
+nix = { version = "0.29", features = ["fs", "process", "user", "signal"] }
 libc = "0.2"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }

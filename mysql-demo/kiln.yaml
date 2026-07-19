@@ -18,12 +18,16 @@ services:
     ports:
       - "8081:8081"
   # Swapped in for Adminer - same role (a browser-facing web UI for the
-  # same mysql service), different tool. Its image's Cmd is already
-  # "apache2-foreground" (no entrypoint override needed, like Adminer).
-  # PMA_HOST pre-fills the server field so the login form doesn't need
-  # "mysql" typed in by hand.
+  # same mysql service), different tool. Unlike Adminer, this image DOES
+  # rely on its own ENTRYPOINT docker-entrypoint.sh (generates
+  # /etc/phpmyadmin/config.secret.inc.php - the cookie-encryption secret
+  # phpMyAdmin refuses to boot without) before ever handing off to
+  # apache2-foreground - same reason mysql above needs its own command
+  # override. PMA_HOST pre-fills the server field so the login form
+  # doesn't need "mysql" typed in by hand.
   phpmyadmin:
     image: phpmyadmin:latest
+    command: ["/docker-entrypoint.sh", "apache2-foreground"]
     depends_on:
       - mysql
     environment:

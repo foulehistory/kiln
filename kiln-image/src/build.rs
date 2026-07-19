@@ -442,6 +442,17 @@ fn run_command_in_container(
     let cmd_c = std::ffi::CString::new(command)
         .map_err(|e| RtError::InvalidArgument(format!("command contains a NUL byte: {e}")))?;
 
+    // See the identical reset in kiln-cli's run_container_init: Rust's
+    // runtime ignores SIGPIPE at startup, and that disposition survives
+    // execve(2) unlike a handler function would - left alone, a RUN
+    // step's shell pipeline would silently inherit kiln's own
+    // SIGPIPE-ignored, not the default behavior it'd have running
+    // natively.
+    unsafe {
+        nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
+            .map_err(|e| RtError::InvalidArgument(format!("resetting SIGPIPE: {e}")))?;
+    }
+
     nix::unistd::execv(&shell, &[shell.clone(), dash_c, cmd_c])
         .map_err(|e| RtError::InvalidArgument(format!("execv(/bin/sh): {e}")))?;
     unreachable!("execv only returns on error, which is handled above")
