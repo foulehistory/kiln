@@ -143,8 +143,8 @@ impl PortSpec {
 /// the relay's listener and any in-flight connections are cleaned up for
 /// free when that process exits, no explicit unpublish step needed.
 pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<()> {
-    if port.proto != "tcp" {
-        return Err(CliError::msg(format!("publishing a {} port is not supported yet (tcp only)", port.proto)));
+    if port.proto == "udp" {
+        return spawn_udp_port_forwarder(port, container_ip);
     }
     let listener = std::net::TcpListener::bind(("0.0.0.0", port.host_port))
         .map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
@@ -180,6 +180,80 @@ pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
                 let _ = c2.shutdown(std::net::Shutdown::Write);
                 let _ = pump_in.join();
             });
+        }
+    });
+    Ok(())
+}
+
+/// UDP's equivalent of [`spawn_port_forwarder`]'s TCP relay - needed for
+/// exactly the kind of game server this is most likely to matter for
+/// (Palworld, Minecraft's non-Java editions, etc. all speak UDP for the
+/// actual game traffic, TCP at most for an admin/RCON side channel).
+///
+/// UDP has no connection to `accept()` the way TCP does, so this keeps
+/// its own small NAT-table analogue instead: one shared front socket
+/// bound to `0.0.0.0:<host_port>`, and one dedicated backend socket per
+/// client address, `connect()`-ed to the container so its own reader
+/// thread can use plain `recv()` (knows only one peer) rather than
+/// juggling `recv_from()`/addresses itself. That backend socket is what
+/// lets a reply *from the container* find its way back to the *right*
+/// client when multiple are relaying through the same front socket at
+/// once.
+///
+/// One simplification worth being explicit about: unlike the TCP relay
+/// (whose threads exit naturally once a connection closes), a UDP
+/// client's backend socket/reader thread has no equivalent teardown
+/// signal to key off - nothing here reaps one after its client goes
+/// quiet. Acceptable for the same reason the TCP relay accepts unbounded
+/// concurrent connections without a limit: this whole relay is already
+/// scoped to the container's own lifetime (see `spawn_port_forwarder`'s
+/// own docs), so "worst case, a long-lived container with many distinct
+/// clients over its lifetime accumulates idle threads" is a real but
+/// minor cost, not an unbounded leak past that container's own life.
+fn spawn_udp_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<()> {
+    let front = std::net::UdpSocket::bind(("0.0.0.0", port.host_port))
+        .map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
+    let front = std::sync::Arc::new(front);
+    let target = format!("{container_ip}:{}", port.container_port);
+
+    let clients: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, std::sync::Arc<std::net::UdpSocket>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 65535];
+        loop {
+            let Ok((n, client_addr)) = front.recv_from(&mut buf) else { break };
+
+            let backend = {
+                let mut clients_guard = clients.lock().expect("client map mutex poisoned");
+                if let Some(backend) = clients_guard.get(&client_addr) {
+                    backend.clone()
+                } else {
+                    let Ok(new_backend) = std::net::UdpSocket::bind(("0.0.0.0", 0)) else { continue };
+                    if new_backend.connect(&target).is_err() {
+                        continue;
+                    }
+                    let new_backend = std::sync::Arc::new(new_backend);
+                    clients_guard.insert(client_addr, new_backend.clone());
+
+                    // This client's own reply path: container -> front -> client.
+                    let front_for_replies = front.clone();
+                    let backend_for_reader = new_backend.clone();
+                    std::thread::spawn(move || {
+                        let mut buf = [0u8; 65535];
+                        loop {
+                            let Ok(n) = backend_for_reader.recv(&mut buf) else { break };
+                            if front_for_replies.send_to(&buf[..n], client_addr).is_err() {
+                                break;
+                            }
+                        }
+                    });
+
+                    new_backend
+                }
+            };
+
+            let _ = backend.send(&buf[..n]);
         }
     });
     Ok(())

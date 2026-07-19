@@ -145,8 +145,19 @@ pub fn ensure_network(store_root: &Path, name: &str, subnet: &str) -> Result<Net
     }
     let bridge = bridge_name(name);
     let gateway = subnet_gateway(subnet)?;
-    let config = NetworkConfig { name: name.to_string(), bridge, subnet: subnet.to_string(), gateway, next_host: 2 };
-    setup_bridge(&config)?;
+    let config = NetworkConfig { name: name.to_string(), bridge: bridge.clone(), subnet: subnet.to_string(), gateway, next_host: 2 };
+    // The bridge name is a deterministic hash of `name`, a real kernel
+    // resource with no notion of which store asked for it - but "does
+    // this network already exist" was only ever checked via *this*
+    // store's own config file. Two different stores (kiln-build is
+    // deliberately the same shared name across every store, but even a
+    // fresh temp store in a test hits this) asking for the same name
+    // both see no local config and would otherwise both try to `ip link
+    // add` the identical bridge, and the second one fails outright with
+    // "File exists" instead of just adopting what's already there.
+    if !bridge_exists(&bridge) {
+        setup_bridge(&config)?;
+    }
     config.save(store_root)?;
     Ok(config)
 }
