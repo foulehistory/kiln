@@ -55,11 +55,20 @@ use crate::image::{Image, ImageConfig};
 use crate::kilnfile::{self, Instruction};
 use crate::layer::{self, Entry, EntryKind, LayerManifest};
 use crate::store::{Hash, Store};
-use kilnd_core::namespaces::{spawn_isolated, Spawn};
-use kilnd_core::rootfs::{bind_mount_host_devices, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
+use kilnd_core::namespaces::{spawn_paused, Spawn};
+use kilnd_core::rootfs::{bind_mount_host_devices, bind_mount_host_resolv_conf, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+/// Every Kilnfile RUN step shares this one bridge network (created on
+/// first use, reused after) rather than getting a per-build or
+/// per-project one - build containers are transient and never need to be
+/// reached *by* anything, only to reach *out*, so there's nothing a
+/// dedicated network per build would buy that a single shared one
+/// doesn't already provide more simply.
+const BUILD_NETWORK_NAME: &str = "kiln-build";
+const BUILD_NETWORK_SUBNET: &str = "172.31.0.0/24";
 
 #[derive(Debug, Clone)]
 pub struct StepResult {
@@ -380,12 +389,30 @@ fn execute_run(store: &Store, layers: &[Hash], config: &ImageConfig, command: &s
     let command_owned = command.to_string();
     let merged_for_child = merged.clone();
 
-    let child_pid = spawn_isolated(&opts, move || -> kilnd_core::Result<()> {
+    // Every RUN step gets real network access (a shared "kiln-build"
+    // bridge, created on first use and reused after) - the same reasoning
+    // as `kiln run`'s own `--network`, just always-on here rather than
+    // opt-in: a Kilnfile RUN step that can't reach the network at all
+    // can't do the single most common thing a build step does (apt-get,
+    // pip install, curl a release tarball, ...), and unlike `kiln run`
+    // there's no per-build flag to ask for it with.
+    kilnd_core::network::ensure_network(store.root(), BUILD_NETWORK_NAME, BUILD_NETWORK_SUBNET).map_err(Error::Runtime)?;
+
+    let pending = spawn_paused(&opts, move || -> kilnd_core::Result<()> {
         run_command_in_container(&merged_for_child, &overlay, &workdir, &env, &command_owned)
     })
     .map_err(Error::Runtime)?;
+    let pid = pending.pid();
+    // A build step's own container id isn't known this early (it's
+    // derived from the *resulting* layer, computed only after this step
+    // finishes) - the pid is already unique for exactly as long as this
+    // attachment needs to be (this one RUN step), so it doubles as the
+    // veth-naming tag `attach_container` needs.
+    kilnd_core::network::attach_container(store.root(), BUILD_NETWORK_NAME, &pid.to_string(), pid.as_raw())
+        .map_err(Error::Runtime)?;
+    pending.release().map_err(Error::Runtime)?;
 
-    let status = nix::sys::wait::waitpid(child_pid, None).map_err(|e| Error::Build(format!("waitpid: {e}")))?;
+    let status = nix::sys::wait::waitpid(pid, None).map_err(|e| Error::Build(format!("waitpid: {e}")))?;
     match status {
         nix::sys::wait::WaitStatus::Exited(_, 0) => {}
         nix::sys::wait::WaitStatus::Exited(_, code) => {
@@ -428,6 +455,7 @@ fn run_command_in_container(
     make_mounts_private()?;
     mount_overlay(overlay)?;
     bind_mount_host_devices(merged)?;
+    bind_mount_host_resolv_conf(merged)?;
     pivot_root_into(merged)?;
     mount_proc(Path::new("/proc"))?;
 

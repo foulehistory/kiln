@@ -265,3 +265,28 @@ pub fn bind_mount_host_devices(merged_dir: &Path) -> Result<()> {
 
     Ok(())
 }
+
+/// Bind-mount the host's own `/etc/resolv.conf` onto the container's
+/// `/etc/resolv.conf`, so DNS resolution actually works for any container
+/// with real network access - nothing else populates it (an image's own
+/// layers essentially never ship a working one, since it has to name
+/// *this specific host's* resolvers), so without this every hostname
+/// lookup inside a networked container fails outright regardless of how
+/// correctly its bridge/NAT is set up. Best-effort: a host with no
+/// `/etc/resolv.conf` (rare) just leaves the container without one,
+/// rather than failing container start entirely.
+///
+/// Must be called **before** [`pivot_root_into`], same as [`bind_mount`].
+pub fn bind_mount_host_resolv_conf(merged_dir: &Path) -> Result<()> {
+    let host_path = Path::new("/etc/resolv.conf");
+    if !host_path.exists() {
+        return Ok(());
+    }
+    let target = merged_dir.join("etc/resolv.conf");
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(error::io(parent))?;
+    }
+    let _ = fs::remove_file(&target);
+    fs::File::create(&target).map_err(error::io(&target))?;
+    mount(Some(host_path), &target, None::<&str>, MsFlags::MS_BIND, None::<&str>).map_err(error::syscall("mount(bind resolv.conf)"))
+}

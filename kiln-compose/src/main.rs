@@ -178,7 +178,7 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
     }
 
     let network_name = format!("{project}_default");
-    if NetworkConfig::load(store, &network_name).is_none() {
+    if NetworkConfig::load(store.root(), &network_name).is_none() {
         network::run(store, network::Command::Create { name: network_name.clone(), subnet: pick_subnet(project) })?;
     }
 
@@ -277,7 +277,7 @@ fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
     // tolerate it already being gone (e.g. a project that was never
     // actually brought up, or a `down` run twice).
     let network_name = format!("{project}_default");
-    if NetworkConfig::load(store, &network_name).is_some() {
+    if NetworkConfig::load(store.root(), &network_name).is_some() {
         match network::run(store, network::Command::Rm { name: network_name.clone() }) {
             Ok(()) => println!("removed network {network_name}"),
             Err(e) => eprintln!("kiln-compose: removing network {network_name}: {e}"),

@@ -58,13 +58,13 @@ fn down_removes_the_project_network_it_created() {
 
     run(&["up", "-d"]);
 
-    let network = NetworkConfig::load(&store, "downtest_default").expect("up should have created the project network");
+    let network = NetworkConfig::load(store.root(), "downtest_default").expect("up should have created the project network");
     let bridge = network.bridge.clone();
     assert!(bridge_exists(&bridge), "sanity check: the bridge should exist right after `up`");
 
     let down_output = run(&["down"]);
     assert!(down_output.status.success(), "down failed: {}", String::from_utf8_lossy(&down_output.stderr));
 
-    assert!(NetworkConfig::load(&store, "downtest_default").is_none(), "down should remove the network's stored config");
+    assert!(NetworkConfig::load(store.root(), "downtest_default").is_none(), "down should remove the network's stored config");
     assert!(!bridge_exists(&bridge), "down should remove the bridge device itself, not just the config file");
 }

@@ -32,7 +32,7 @@ pub fn list(store: &Store) -> Response {
 
     for entry in entries.flatten() {
         let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
-        let Some(cfg) = NetworkConfig::load(store, &stem) else { continue };
+        let Some(cfg) = NetworkConfig::load(store.root(), &stem) else { continue };
 
         let containers: Vec<NetworkContainerJson> = all_containers
             .iter()
