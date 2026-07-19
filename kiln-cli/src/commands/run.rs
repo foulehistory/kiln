@@ -51,6 +51,12 @@ pub struct Args {
     #[arg(short = 'p', long = "publish")]
     pub ports: Vec<String>,
 
+    /// Set an environment variable inside the container, as `KEY=VALUE`
+    /// (repeatable) - overrides the image's own ENV of the same name,
+    /// same as `kiln-compose`'s `environment:` already did for services.
+    #[arg(short = 'e', long = "env")]
+    pub env: Vec<String>,
+
     /// Memory limit, e.g. `512m`, `1g`, or a plain byte count (unlimited by default)
     #[arg(long)]
     pub memory: Option<String>,
@@ -91,6 +97,15 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
 pub fn run(store: &Store, args: Args) -> CliResult {
     let memory_limit_bytes = args.memory.map(|s| parse_size(&s)).transpose().map_err(CliError::msg)?;
     let restart_policy = RestartPolicy::parse(&args.restart).map_err(CliError::msg)?;
+    let extra_env = args
+        .env
+        .iter()
+        .map(|kv| {
+            kv.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .ok_or_else(|| CliError::msg(format!("invalid -e/--env {kv:?}: expected KEY=VALUE")))
+        })
+        .collect::<CliResult<Vec<_>>>()?;
 
     let spec = RunSpec {
         image: args.image,
@@ -98,7 +113,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         name: args.name,
         volumes: args.volumes,
         network: args.network,
-        extra_env: Vec::new(),
+        extra_env,
         extra_hosts: Vec::new(),
         memory_limit_bytes,
         cpu_limit: args.cpus,
