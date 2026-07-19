@@ -1,4 +1,4 @@
-use crate::http::{Request, Response};
+use kilnd_core::http::{Request, Response};
 use kiln_image::image::Image;
 use kiln_image::layer::{EntryKind, LayerManifest};
 use kiln_image::registry;

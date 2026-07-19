@@ -7,9 +7,7 @@
 //! containers are created (it calls the exact same
 //! `kiln_cli::commands::run::start` every direct CLI invocation does).
 
-mod conn;
 mod handlers;
-mod http;
 mod server;
 
 use clap::Parser;

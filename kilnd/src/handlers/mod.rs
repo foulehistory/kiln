@@ -5,8 +5,8 @@ pub mod networks;
 pub mod system;
 pub mod volumes;
 
-use crate::conn::Conn;
-use crate::http::{Request, Response};
+use kilnd_core::conn::Conn;
+use kilnd_core::http::{Request, Response};
 use kiln_image::store::Store;
 use std::io::{self, BufReader};
 

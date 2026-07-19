@@ -10,12 +10,15 @@
 //! - **Docker Hub** (no explicit host, e.g. `busybox`, `library/debian`):
 //!   `https://registry-1.docker.io`, with the anonymous-token Bearer auth
 //!   dance Docker Hub requires for every pull and push.
-//! - **An explicit host** (e.g. `localhost:5555/echo`, `myregistry.example.com/app`):
-//!   talked to directly over plain HTTP with no auth at all. This is
-//!   deliberately the simplest possible thing that works against a local,
-//!   unauthenticated test registry - not a general per-registry
-//!   auth/TLS-config system. A registry that actually requires auth isn't
-//!   supported yet.
+//! - **An explicit host** (e.g. `localhost:5555/echo`,
+//!   `myregistry.example.com/app`): HTTPS by default (see
+//!   [`Reference::base_url`] for the `localhost`/`http://`-prefix escape
+//!   hatches), with the standard OCI Distribution auth flow - ping
+//!   `/v2/`, and if it 401s with a `WWW-Authenticate: Bearer` challenge,
+//!   fetch a token from the realm it names, using
+//!   `KILN_REGISTRY_USER`/`KILN_REGISTRY_PASS` as HTTP Basic auth if
+//!   set. A registry that doesn't challenge at all is treated as fully
+//!   open (no token sent).
 //!
 //! # Converting OCI layers to Kiln layers
 //!
@@ -101,9 +104,22 @@ impl Reference {
 
     /// The registry's API base (e.g. `https://registry-1.docker.io` or
     /// `http://localhost:5555`) - everything before `/v2/...`.
+    ///
+    /// Explicit hosts default to HTTPS - no real registry accepts plain
+    /// HTTP, and this is what lets a self-hosted registry (see
+    /// `kiln-registry`) sit behind a normal TLS-terminating reverse
+    /// proxy with zero extra client config. Two escape hatches: a host
+    /// already prefixed with `http://`/`https://` is used verbatim (for
+    /// a registry not reachable at the "obvious" scheme), and
+    /// `localhost`/`127.0.0.1` default to plain HTTP since a local dev
+    /// registry has no certificate to offer.
     fn base_url(&self) -> String {
         match &self.host {
-            Some(h) => format!("http://{h}"),
+            Some(h) if h.starts_with("http://") || h.starts_with("https://") => h.clone(),
+            Some(h) if h == "localhost" || h.starts_with("localhost:") || h == "127.0.0.1" || h.starts_with("127.0.0.1:") => {
+                format!("http://{h}")
+            }
+            Some(h) => format!("https://{h}"),
             None => DOCKER_HUB_REGISTRY.to_string(),
         }
     }
@@ -575,18 +591,20 @@ struct OciManifest {
 
 /// `None` for an explicit-host registry (no auth support yet); `Some(token)` for Docker Hub.
 fn get_push_token(reference: &Reference) -> Result<Option<String>> {
-    if reference.host.is_some() {
-        return Ok(None);
+    match &reference.host {
+        Some(_) => get_explicit_host_token(&reference.base_url(), &reference.repository, "pull,push"),
+        None => {
+            let repository = &reference.repository;
+            let url = format!("{DOCKER_HUB_AUTH}?service={DOCKER_HUB_SERVICE}&scope=repository:{repository}:pull,push");
+            let resp = ureq::get(&url)
+                .call()
+                .map_err(|e| Error::Registry(format!("requesting push token for {repository}: {e}")))?;
+            let parsed: TokenResponse = resp
+                .into_json()
+                .map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
+            Ok(Some(parsed.token))
+        }
     }
-    let repository = &reference.repository;
-    let url = format!("{DOCKER_HUB_AUTH}?service={DOCKER_HUB_SERVICE}&scope=repository:{repository}:pull,push");
-    let resp = ureq::get(&url)
-        .call()
-        .map_err(|e| Error::Registry(format!("requesting push token for {repository}: {e}")))?;
-    let parsed: TokenResponse = resp
-        .into_json()
-        .map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
-    Ok(Some(parsed.token))
 }
 
 /// Upload `data` as a blob, if the registry doesn't already have it

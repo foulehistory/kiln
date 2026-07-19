@@ -46,8 +46,8 @@ use std::ffi::CString;
 use std::io::{self, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 
-use crate::conn::Conn;
-use crate::http::{Request, Response};
+use kilnd_core::conn::Conn;
+use kilnd_core::http::{Request, Response};
 
 /// Shells this endpoint is willing to exec - an allowlist rather than
 /// trusting `?shell=` directly, since it's a query string reaching all

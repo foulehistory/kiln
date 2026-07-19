@@ -1,4 +1,4 @@
-use crate::http::{Request, Response};
+use kilnd_core::http::{Request, Response};
 use kiln_cli::commands::network::{self, NetworkConfig};
 use kiln_cli::container::Container;
 use kiln_image::store::Store;

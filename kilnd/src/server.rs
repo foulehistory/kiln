@@ -1,5 +1,5 @@
-use crate::conn::Conn;
-use crate::http::Request;
+use kilnd_core::conn::Conn;
+use kilnd_core::http::Request;
 use kiln_image::store::Store;
 use std::io::{self, BufReader};
 use std::net::TcpListener;

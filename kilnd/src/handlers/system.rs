@@ -4,7 +4,7 @@
 //! straight from the store's own directory layout, the same directories
 //! `kiln-image::store::Store` already owns).
 
-use crate::http::Response;
+use kilnd_core::http::Response;
 use kiln_cli::commands::gc::collect_garbage;
 use kiln_image::store::Store;
 use serde::Serialize;

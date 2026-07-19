@@ -6,4 +6,5 @@ members = [
     "kiln-cli",
     "kiln-compose",
     "kilnd",
+    "kiln-registry",
 ]
