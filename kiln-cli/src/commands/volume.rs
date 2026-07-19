@@ -7,7 +7,7 @@
 //! remote volume plugins - just a directory Kiln manages the lifecycle of
 //! independently of any container.
 
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult};
 use kiln_image::store::Store;
 use std::path::PathBuf;
 
@@ -18,6 +18,10 @@ pub enum Command {
     Rm { name: String },
     /// Remove every volume not referenced by any container's stored `-v` specs
     Prune,
+    /// Write a volume's contents to a tar.gz file
+    Export { name: String, output: PathBuf },
+    /// Create a new volume from a tar.gz previously produced by `export`
+    Import { name: String, input: PathBuf },
 }
 
 pub fn volumes_dir(store: &Store) -> PathBuf {
@@ -26,6 +30,44 @@ pub fn volumes_dir(store: &Store) -> PathBuf {
 
 pub fn path(store: &Store, name: &str) -> PathBuf {
     volumes_dir(store).join(name)
+}
+
+/// Tars + gzips a volume's contents. Shared by `kiln volume export` and
+/// kilnd's `GET /volumes/:name/export` (which just calls this and streams
+/// the bytes back as a download instead of writing them to a file).
+pub fn export_bytes(store: &Store, name: &str) -> CliResult<Vec<u8>> {
+    let dir = path(store, name);
+    if !dir.is_dir() {
+        return Err(CliError::msg(format!("no such volume: {name}")));
+    }
+    let mut gz = Vec::new();
+    {
+        let encoder = flate2::write::GzEncoder::new(&mut gz, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        builder.append_dir_all(".", &dir)?;
+        builder.into_inner()?.finish()?;
+    }
+    Ok(gz)
+}
+
+/// The inverse of [`export_bytes`]: creates a brand new volume `name` from
+/// tar.gz bytes. Refuses to overwrite an existing volume - importing into
+/// an existing name would silently merge two unrelated trees together,
+/// which is never what "restore a backup" means.
+pub fn import_bytes(store: &Store, name: &str, tar_gz: &[u8]) -> CliResult {
+    let dir = path(store, name);
+    if dir.exists() {
+        return Err(CliError::msg(format!("volume already exists: {name}")));
+    }
+    std::fs::create_dir_all(&dir)?;
+    let decoder = flate2::read::GzDecoder::new(tar_gz);
+    let mut archive = tar::Archive::new(decoder);
+    if let Err(e) = archive.unpack(&dir) {
+        // Don't leave a half-extracted volume behind on failure.
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 pub fn run(store: &Store, cmd: Command) -> CliResult {
@@ -66,6 +108,16 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
             if !any {
                 println!("nothing to prune");
             }
+        }
+        Command::Export { name, output } => {
+            let bytes = export_bytes(store, &name)?;
+            std::fs::write(&output, &bytes)?;
+            println!("{}", output.display());
+        }
+        Command::Import { name, input } => {
+            let bytes = std::fs::read(&input)?;
+            import_bytes(store, &name, &bytes)?;
+            println!("{name}");
         }
     }
     Ok(())

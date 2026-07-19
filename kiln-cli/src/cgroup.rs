@@ -32,6 +32,9 @@ pub struct Stats {
     pub memory_current_bytes: u64,
     pub cpu_usage_usec: u64,
     pub pids_current: u64,
+    /// `None` when the container has no network attached (no veth to read).
+    pub rx_bytes: Option<u64>,
+    pub tx_bytes: Option<u64>,
 }
 
 /// Read a snapshot of the container's cgroup stats. Returns `None` if it
@@ -46,7 +49,11 @@ pub fn stats(container_id: &str) -> Option<Stats> {
         .find_map(|l| l.strip_prefix("usage_usec "))
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(0);
-    Some(Stats { memory_current_bytes, cpu_usage_usec, pids_current })
+    let (rx_bytes, tx_bytes) = match kilnd_core::network::veth_stats(container_id) {
+        Some((rx, tx)) => (Some(rx), Some(tx)),
+        None => (None, None),
+    };
+    Some(Stats { memory_current_bytes, cpu_usage_usec, pids_current, rx_bytes, tx_bytes })
 }
 
 /// Best-effort: a cgroup can only be removed once it has no member

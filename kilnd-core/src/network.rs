@@ -162,6 +162,28 @@ pub fn ensure_network(store_root: &Path, name: &str, subnet: &str) -> Result<Net
     Ok(config)
 }
 
+/// The host-side veth name for a container, derived the exact same way
+/// `attach_container` names it - lets callers (e.g. stats collection)
+/// find a container's network interface without needing anything stored
+/// on the container itself.
+pub fn veth_host_name(container_id: &str) -> String {
+    format!("kv{}", short_tag(container_id))
+}
+
+/// Cumulative (rx_bytes, tx_bytes) for a container's network traffic, read
+/// from its host-side veth's kernel counters. The host-side end mirrors
+/// exactly what the container's own `eth0` sees, so this needs no access
+/// to the container's network namespace at all. Returns `None` if the
+/// container has no network attached (interface doesn't exist) or the
+/// counters can't be read.
+pub fn veth_stats(container_id: &str) -> Option<(u64, u64)> {
+    let name = veth_host_name(container_id);
+    let base = format!("/sys/class/net/{name}/statistics");
+    let rx = std::fs::read_to_string(format!("{base}/rx_bytes")).ok()?.trim().parse().ok()?;
+    let tx = std::fs::read_to_string(format!("{base}/tx_bytes")).ok()?.trim().parse().ok()?;
+    Some((rx, tx))
+}
+
 /// Attach the container at `pid` to `network`: a veth pair with one end
 /// on the host bridge and the other moved into the container's own
 /// network namespace, renamed to `eth0`, given the next free IP in the

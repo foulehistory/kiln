@@ -436,9 +436,10 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "kiln-cli"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "clap",
+ "flate2",
  "kiln-image",
  "kilnd-core",
  "libc",
@@ -446,13 +447,14 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "thiserror",
 ]
 
 [[package]]
 name = "kiln-compose"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "clap",
  "kiln-cli",
@@ -467,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-image"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "flate2",
  "hex",
@@ -486,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "kilnd"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "clap",
  "kiln-cli",
@@ -501,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "kilnd-core"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "libc",
  "nix",

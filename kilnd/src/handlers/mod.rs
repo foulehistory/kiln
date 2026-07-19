@@ -59,6 +59,8 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("DELETE", ["volumes", name]) => volumes::remove(store, name).write_to(stream),
         ("GET", ["volumes", name, "files"]) => volumes::list_files(store, name, req).write_to(stream),
         ("GET", ["volumes", name, "files", "content"]) => volumes::read_file(store, name, req).write_to(stream),
+        ("GET", ["volumes", name, "export"]) => volumes::export(store, name).write_to(stream),
+        ("POST", ["volumes", name, "import"]) => volumes::import(store, name, req).write_to(stream),
         ("GET", ["disk-usage"]) => system::disk_usage(store).write_to(stream),
         ("POST", ["gc"]) => system::gc(store).write_to(stream),
         _ => Response::text(404, "not found").write_to(stream),

@@ -74,6 +74,30 @@ pub fn remove(store: &Store, name: &str) -> Response {
     }
 }
 
+pub fn export(store: &Store, name: &str) -> Response {
+    match volume::export_bytes(store, name) {
+        Ok(bytes) => Response {
+            status: 200,
+            headers: vec![
+                ("Content-Type".into(), "application/gzip".into()),
+                ("Content-Disposition".into(), format!("attachment; filename=\"{name}.tar.gz\"")),
+            ],
+            body: bytes,
+        },
+        Err(e) => Response::text(404, format!("{e}")),
+    }
+}
+
+pub fn import(store: &Store, name: &str, req: &Request) -> Response {
+    if name.trim().is_empty() {
+        return Response::text(400, "volume name must not be empty");
+    }
+    match volume::import_bytes(store, name, &req.body) {
+        Ok(()) => Response::json(201, &serde_json::json!({ "ok": true })),
+        Err(e) => Response::text(400, format!("{e}")),
+    }
+}
+
 /// Resolves a `?path=` query param (a path *relative to the volume
 /// root*) into a real filesystem path, refusing anything that would
 /// escape the volume: `..` components are rejected outright, and - since
