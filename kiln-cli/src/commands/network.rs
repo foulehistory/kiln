@@ -124,6 +124,27 @@ fn remove_network(store: &Store, name: &str) -> CliResult {
     Ok(())
 }
 
+/// Creates the bridge + MASQUERADE rule described by `cfg` - the actual
+/// kernel-level setup, shared by a fresh `Command::Create` and
+/// `attach_container`'s self-healing repair (see its own doc comment).
+fn setup_bridge(cfg: &NetworkConfig) -> CliResult {
+    run_cmd("ip", &["link", "add", &cfg.bridge, "type", "bridge"])?;
+    run_cmd("ip", &["link", "set", &cfg.bridge, "up"])?;
+    run_cmd("ip", &["addr", "add", &format!("{}/24", cfg.gateway), "dev", &cfg.bridge])?;
+    let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
+    let _ = ProcessCommand::new("iptables")
+        .args(["-t", "nat", "-A", "POSTROUTING", "-s", &cfg.subnet, "!", "-o", &cfg.bridge, "-j", "MASQUERADE"])
+        .status();
+    Ok(())
+}
+
+/// Every registered network interface (bridges included) shows up under
+/// `/sys/class/net/<name>` - cheaper and simpler than shelling out to `ip
+/// link show` just to check existence.
+fn bridge_exists(bridge: &str) -> bool {
+    std::path::Path::new(&format!("/sys/class/net/{bridge}")).exists()
+}
+
 pub fn run(store: &Store, cmd: Command) -> CliResult {
     match cmd {
         Command::Create { name, subnet } => {
@@ -132,16 +153,8 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
             }
             let bridge = bridge_name(&name);
             let gateway = subnet_gateway(&subnet)?;
-
-            run_cmd("ip", &["link", "add", &bridge, "type", "bridge"])?;
-            run_cmd("ip", &["link", "set", &bridge, "up"])?;
-            run_cmd("ip", &["addr", "add", &format!("{gateway}/24"), "dev", &bridge])?;
-            let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
-            let _ = ProcessCommand::new("iptables")
-                .args(["-t", "nat", "-A", "POSTROUTING", "-s", &subnet, "!", "-o", &bridge, "-j", "MASQUERADE"])
-                .status();
-
             let config = NetworkConfig { name: name.clone(), bridge, subnet, gateway, next_host: 2 };
+            setup_bridge(&config)?;
             std::fs::create_dir_all(networks_dir(store))?;
             config.save(store)?;
             println!("{name}");
@@ -199,6 +212,15 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
 /// process state, is what matters here.
 pub fn attach_container(store: &Store, network: &str, container_id: &str, pid: i32) -> CliResult<String> {
     let mut cfg = NetworkConfig::load(store, network).ok_or_else(|| CliError::msg(format!("no such network: {network}")))?;
+    if !bridge_exists(&cfg.bridge) {
+        // The network's config on disk can outlive its actual kernel
+        // bridge - e.g. WSL2 (or the VM/host generally) restarting wipes
+        // network interfaces and iptables rules, but not files under the
+        // store. Without this check, every attach against such a network
+        // failed with a cryptic "ip link set ... master <bridge>: Device
+        // does not exist" instead of just transparently repairing itself.
+        setup_bridge(&cfg)?;
+    }
     let ip = cfg.allocate_ip();
     cfg.save(store)?;
 

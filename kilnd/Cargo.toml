@@ -1,6 +1,6 @@
 [package]
 name = "kilnd"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 description = "kilnd: optional daemon exposing Kiln's runtime over a local Unix socket HTTP API."
 license = "Apache-2.0"

@@ -191,6 +191,21 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
         let svc = &compose.services[name];
         let container_name = format!("{project}_{name}");
 
+        // Reap any dead containers already using this name before looking
+        // one up - e.g. after a host/VM restart that killed a container's
+        // process but left its directory (and name) behind.
+        // Container::resolve refuses to pick among same-named entries once
+        // there's more than one, so without this cleanup a restart just
+        // left `up` creating a fresh, equally ambiguous container under
+        // the same name every time it ran, rather than ever reusing or
+        // replacing the dead one.
+        for mut candidate in Container::list(store).into_iter().filter(|c| c.name == container_name) {
+            candidate.refresh(store);
+            if candidate.status != Status::Running {
+                let _ = std::fs::remove_dir_all(Container::dir(store, &candidate.id));
+            }
+        }
+
         if let Some(mut existing) = Container::resolve(store, &container_name) {
             existing.refresh(store);
             if existing.status == Status::Running {
@@ -233,17 +248,24 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
 fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
     for name in compose.services.keys() {
         let container_name = format!("{project}_{name}");
-        let Some(mut c) = Container::resolve(store, &container_name) else { continue };
-        c.refresh(store);
-        if c.status == Status::Running {
-            if let Some(pid) = c.pid {
-                let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL);
+        // Not Container::resolve: it refuses to pick among same-named
+        // entries once there's more than one (e.g. a leftover dead
+        // container from before a host/VM restart, alongside a live one
+        // started since) - `down` should remove every container under
+        // this name regardless, not silently skip it over an ambiguity
+        // that resolve() can't settle but down doesn't need settled.
+        for mut c in Container::list(store).into_iter().filter(|c| c.name == container_name) {
+            c.refresh(store);
+            if c.status == Status::Running {
+                if let Some(pid) = c.pid {
+                    let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL);
+                }
             }
-        }
-        let dir = Container::dir(store, &c.id);
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => println!("removed {container_name}"),
-            Err(e) => eprintln!("kiln-compose: removing {container_name}: {e}"),
+            let dir = Container::dir(store, &c.id);
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => println!("removed {container_name}"),
+                Err(e) => eprintln!("kiln-compose: removing {container_name}: {e}"),
+            }
         }
     }
 
