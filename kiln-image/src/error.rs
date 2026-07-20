@@ -39,6 +39,9 @@ pub enum Error {
     #[error("registry error: {0}")]
     Registry(String),
 
+    #[error("scan error: {0}")]
+    Scan(String),
+
     #[error("runtime error: {0}")]
     Runtime(#[from] kilnd_core::Error),
 

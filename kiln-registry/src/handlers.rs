@@ -74,6 +74,8 @@ fn dispatch(store: &RegistryStore, tokens: &TokenStore, req: &Request, repositor
         ("GET", ["manifests", tag]) => get_manifest(store, repository, tag),
         ("PUT", ["manifests", tag, "signature"]) => put_signature(store, tokens, req, repository, tag),
         ("GET", ["manifests", tag, "signature"]) => get_signature(store, repository, tag),
+        ("PUT", ["manifests", tag, "scan-report"]) => put_scan_report(store, tokens, req, repository, tag),
+        ("GET", ["manifests", tag, "scan-report"]) => get_scan_report(store, repository, tag),
         _ => Response::text(404, "not found"),
     }
 }
@@ -278,6 +280,24 @@ fn get_signature(store: &RegistryStore, repository: &str, tag: &str) -> Response
     match store.signature_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
         Some(bytes) => Response { status: 200, headers: vec![("Content-Type".into(), "application/json".into())], body: bytes },
         None => Response::text(404, "no signature for this manifest"),
+    }
+}
+
+fn put_scan_report(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str, tag: &str) -> Response {
+    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
+        return Response::text(401, "push token required");
+    }
+    match store.write_scan_report(repository, tag, &req.body) {
+        Some(Ok(())) => Response { status: 201, headers: Vec::new(), body: Vec::new() },
+        Some(Err(e)) => Response::text(500, format!("writing scan report: {e}")),
+        None => Response::text(400, "invalid tag"),
+    }
+}
+
+fn get_scan_report(store: &RegistryStore, repository: &str, tag: &str) -> Response {
+    match store.scan_report_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
+        Some(bytes) => Response { status: 200, headers: vec![("Content-Type".into(), "application/json".into())], body: bytes },
+        None => Response::text(404, "no scan report for this manifest"),
     }
 }
 

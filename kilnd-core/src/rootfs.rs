@@ -92,6 +92,17 @@ pub fn mount_overlay(spec: &OverlaySpec) -> Result<()> {
     .map_err(error::syscall("mount(overlay)"))
 }
 
+/// Lazily unmount whatever's at `target` (`MNT_DETACH`: succeeds
+/// immediately, actually goes away once nothing still references it) -
+/// the general-purpose counterpart to the specific unmounts already
+/// inlined elsewhere in this module (e.g. `pivot_root_into`'s own old-root
+/// detach). Used by callers that mount something *without* going through
+/// a full container lifecycle - e.g. a throwaway overlay for scanning an
+/// image's contents, never pivoted into or torn down by a container exit.
+pub fn unmount(target: &Path) -> Result<()> {
+    umount2(target, MntFlags::MNT_DETACH).map_err(error::syscall("umount2"))
+}
+
 /// Make the entire mount tree private (`MS_PRIVATE | MS_REC` on `/`),
 /// severing propagation to and from the host's mount namespace.
 ///

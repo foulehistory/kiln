@@ -803,6 +803,48 @@ fn sign_and_publish(base_url: &str, repository: &str, tag: &str, manifest_json: 
     Ok(())
 }
 
+/// Uploads a vulnerability scan report as `<repository>:<tag>`'s sibling
+/// `.../manifests/{tag}/scan-report` - the same "sibling file next to the
+/// manifest, no new route needed" shape `sign_and_publish` already uses
+/// for signatures. Called explicitly by `kiln push --scan` *after* a
+/// successful push, not automatically from [`push`] itself - unlike
+/// signing (which is silent/automatic whenever a local key exists),
+/// scanning is opt-in and CLI-orchestrated, since `--block-on-critical`
+/// needs to inspect the report and potentially refuse the push entirely
+/// *before* any bytes go out.
+pub fn push_scan_report(reference: &str, report: &crate::scan::ScanReport) -> Result<()> {
+    let reference = Reference::parse(reference);
+    let base_url = reference.base_url();
+    let token = get_push_token(&reference)?;
+
+    let url = format!("{base_url}/v2/{}/manifests/{}/scan-report", reference.repository, reference.tag);
+    let body = serde_json::to_vec(report).map_err(|e| Error::Registry(e.to_string()))?;
+    with_auth(ureq::put(&url), token.as_deref())
+        .set("Content-Type", "application/json")
+        .send_bytes(&body)
+        .map_err(|e| Error::Registry(format!("pushing scan report: {e}")))?;
+    Ok(())
+}
+
+/// Fetches `<repository>:<tag>`'s scan report, if one was ever pushed for
+/// it - `Ok(None)` (not an error) if it was never scanned, since that's
+/// the common case for most images, not a failure.
+pub fn fetch_scan_report(reference: &str) -> Result<Option<crate::scan::ScanReport>> {
+    let reference = Reference::parse(reference);
+    let base_url = reference.base_url();
+    let token = get_token(&reference)?;
+
+    let url = format!("{base_url}/v2/{}/manifests/{}/scan-report", reference.repository, reference.tag);
+    match with_auth(ureq::get(&url), token.as_deref()).call() {
+        Ok(resp) => {
+            let report = resp.into_json().map_err(|e| Error::Registry(format!("parsing scan report: {e}")))?;
+            Ok(Some(report))
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(Error::Registry(format!("fetching scan report: {e}"))),
+    }
+}
+
 fn build_oci_config_json(config: &ImageConfig) -> Vec<u8> {
     let mut exposed = serde_json::Map::new();
     for (port, proto) in &config.exposed_ports {

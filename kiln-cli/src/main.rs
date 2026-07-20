@@ -66,6 +66,9 @@ enum Command {
     /// Manage encrypted-at-rest secrets
     #[command(subcommand)]
     Secret(commands::secret::Command),
+    /// Operate on a single image (currently: vulnerability scanning)
+    #[command(subcommand)]
+    Image(commands::image::Command),
 }
 
 fn main() {
@@ -101,6 +104,7 @@ fn main() {
         Command::Network(cmd) => commands::network::run(&store, cmd),
         Command::Key(cmd) => commands::key::run(cmd),
         Command::Secret(cmd) => commands::secret::run(&store, cmd),
+        Command::Image(cmd) => commands::image::run(&store, cmd),
     };
 
     if let Err(e) = result {

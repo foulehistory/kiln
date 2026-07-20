@@ -2,6 +2,7 @@ pub mod build;
 pub mod cp;
 pub mod exec;
 pub mod gc;
+pub mod image;
 pub mod images;
 pub mod inspect;
 pub mod key;

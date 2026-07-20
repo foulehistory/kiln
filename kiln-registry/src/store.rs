@@ -8,6 +8,7 @@
 //!   blobs/sha256/<hex>                      # content-addressed, shared across every repository
 //!   manifests/<repository>/<tag>.json       # e.g. manifests/foulehistory/palworld/latest.json
 //!   manifests/<repository>/<tag>.sig.json   # {"algorithm":"ed25519","signature":"<hex>"}, if signed
+//!   manifests/<repository>/<tag>.scan.json  # vulnerability report, if pushed with `kiln push --scan`
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,23 @@ impl RegistryStore {
         let path = self.signature_path(repository, tag)?;
         Some((|| {
             std::fs::create_dir_all(path.parent().expect("signature_path always has a manifests/... parent"))?;
+            std::fs::write(&path, data)
+        })())
+    }
+
+    /// Another sibling of `manifest_path`, `.scan.json` this time - only
+    /// present if the pusher used `kiln push --scan`.
+    pub fn scan_report_path(&self, repository: &str, tag: &str) -> Option<PathBuf> {
+        if tag.is_empty() || tag.contains('/') || tag.contains("..") {
+            return None;
+        }
+        Some(self.repo_dir(repository)?.join(format!("{tag}.scan.json")))
+    }
+
+    pub fn write_scan_report(&self, repository: &str, tag: &str, data: &[u8]) -> Option<io::Result<()>> {
+        let path = self.scan_report_path(repository, tag)?;
+        Some((|| {
+            std::fs::create_dir_all(path.parent().expect("scan_report_path always has a manifests/... parent"))?;
             std::fs::write(&path, data)
         })())
     }

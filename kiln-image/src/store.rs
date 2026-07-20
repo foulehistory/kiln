@@ -147,6 +147,26 @@ impl Store {
         self.signature_marker_path(id).is_file()
     }
 
+    /// Same reasoning as `signature_marker_path`: keyed by content hash,
+    /// not a field on `Image` - a vulnerability report is a property of
+    /// what's actually installed in the image's layers, which is exactly
+    /// what the id already hashes, so this is cache-shaped (any two tags
+    /// pointing at the same content share one report) rather than
+    /// tag-shaped.
+    fn scan_report_path(&self, id: Hash) -> PathBuf {
+        self.images_dir().join(format!("{id}.scan.json"))
+    }
+
+    pub fn save_scan_report(&self, id: Hash, report: &crate::scan::ScanReport) -> Result<()> {
+        let json = serde_json::to_vec_pretty(report).map_err(Error::json(self.scan_report_path(id)))?;
+        write_atomically(&self.scan_report_path(id), &json)
+    }
+
+    pub fn load_scan_report(&self, id: Hash) -> Option<crate::scan::ScanReport> {
+        let bytes = std::fs::read(self.scan_report_path(id)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     /// Point `name:tag` at `id`. Overwrites any previous tag of the same
     /// name - tags are mutable pointers (like a git branch), unlike the
     /// content-addressed objects they point at.

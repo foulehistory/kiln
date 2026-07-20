@@ -52,6 +52,8 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("POST", ["images", "build"]) => images::build(store, req).write_to(stream),
         ("GET", ["images", id]) => images::inspect(store, id).write_to(stream),
         ("DELETE", ["images", id]) => images::remove(store, id).write_to(stream),
+        ("GET", ["images", id, "scan"]) => images::get_scan(store, id).write_to(stream),
+        ("POST", ["images", id, "scan"]) => images::post_scan(store, id).write_to(stream),
         ("GET", ["networks"]) => networks::list(store).write_to(stream),
         ("POST", ["networks"]) => networks::create(store, req).write_to(stream),
         ("DELETE", ["networks", name]) => networks::remove(store, name).write_to(stream),

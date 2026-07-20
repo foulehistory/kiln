@@ -269,6 +269,38 @@ pub fn build(store: &Store, req: &Request) -> Response {
     )
 }
 
+/// Serves the locally cached report from the last `kiln image scan`/`kiln
+/// push --scan` for this image - never triggers a scan itself, so a plain
+/// `GET` from the dashboard's image detail view can't accidentally kick
+/// off a slow Trivy run.
+pub fn get_scan(store: &Store, id: &str) -> Response {
+    let Ok(hash) = Hash::from_hex(id) else {
+        return Response::text(400, format!("invalid image id: {id}"));
+    };
+    match store.load_scan_report(hash) {
+        Some(report) => Response::json(200, &report),
+        None => Response::text(404, "no scan report for this image - scan it first"),
+    }
+}
+
+/// Runs a real Trivy scan synchronously, same "this connection's own
+/// thread blocks, nobody else's does" reasoning as `pull`/`build` above -
+/// a scan can take a while on first run (Trivy downloading its
+/// vulnerability database), same tradeoff.
+pub fn post_scan(store: &Store, id: &str) -> Response {
+    let Ok(hash) = Hash::from_hex(id) else {
+        return Response::text(400, format!("invalid image id: {id}"));
+    };
+    let report = match kiln_image::scan::scan(store, &hash) {
+        Ok(r) => r,
+        Err(e) => return Response::text(500, format!("{e}")),
+    };
+    if let Err(e) = store.save_scan_report(hash, &report) {
+        return Response::text(500, format!("scan succeeded but saving the report failed: {e}"));
+    }
+    Response::json(201, &report)
+}
+
 pub fn remove(store: &Store, id: &str) -> Response {
     let Ok(hash) = Hash::from_hex(id) else {
         return Response::text(400, format!("invalid image id: {id}"));
