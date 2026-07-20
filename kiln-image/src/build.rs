@@ -481,6 +481,15 @@ fn run_command_in_container(
             .map_err(|e| RtError::InvalidArgument(format!("resetting SIGPIPE: {e}")))?;
     }
 
+    // Always the full default profile - no per-instruction escape hatch
+    // exists in the Kilfile format today (see kilnd_core::security's own
+    // docs on this scope choice). Same ordering constraint as
+    // kiln-cli::commands::run::run_container_init: after every
+    // mount/pivot_root above (still need CAP_SYS_ADMIN), seccomp last.
+    let security = kilnd_core::security::SecurityProfile::default();
+    kilnd_core::security::drop_capabilities(&security)?;
+    kilnd_core::security::apply_seccomp(&security)?;
+
     nix::unistd::execv(&shell, &[shell.clone(), dash_c, cmd_c])
         .map_err(|e| RtError::InvalidArgument(format!("execv(/bin/sh): {e}")))?;
     unreachable!("execv only returns on error, which is handled above")

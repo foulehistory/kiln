@@ -60,6 +60,21 @@ pub struct Service {
     /// name is looked up in.
     #[serde(default)]
     pub node: Option<String>,
+    /// Only `["seccomp:unconfined"]` is recognized (matches Docker
+    /// Compose's own field name/syntax) - disables the default seccomp
+    /// filter for this service. Never on by default; see
+    /// `kilnd_core::security`'s own docs on the default profile this
+    /// opts out of.
+    #[serde(default)]
+    pub security_opt: Vec<String>,
+    /// Capabilities to add on top of the default baseline, e.g.
+    /// `[NET_ADMIN]` - same syntax as `kiln run --cap-add`.
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    /// Capabilities to remove from the default baseline - same syntax as
+    /// `kiln run --cap-drop`, checked after `cap_add`.
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
 }
 
 /// Accepts either Compose's shell-string form (`command: "echo hi"`) or

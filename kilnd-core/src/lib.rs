@@ -21,5 +21,6 @@ pub mod namespaces;
 pub mod netbpf;
 pub mod network;
 pub mod rootfs;
+pub mod security;
 
 pub use error::{Error, Result};

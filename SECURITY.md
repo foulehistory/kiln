@@ -33,29 +33,71 @@ Verified by two tests:
   path `kiln run` itself uses), inspected from the host: its real UID/GID
   must fall in the subordinate range and must never be `0`.
 
-## Seccomp — not implemented
+## Seccomp — implemented (curated deny-list, not a full allow-list)
 
-No seccomp filter is applied to container processes. Every syscall
-available inside the container's own namespaces is reachable — nothing
-narrows that down. This is the single biggest gap versus Docker/runc's
-own default seccomp profile, which blocks a well-known set of
-rarely-needed, higher-risk syscalls (`ptrace`, arbitrary `mount`,
-`reboot`, `kexec_load`, kernel module manipulation, etc.) even for an
-already-unprivileged process.
+Every container Kiln creates (`kiln run`, and Kilfile `RUN` steps) gets a
+seccomp-bpf filter by default (`kilnd_core::security::apply_seccomp`,
+built with the [`seccompiler`](https://github.com/rust-vmm/seccompiler)
+crate - chosen over `libseccomp-rs` specifically to avoid adding a C
+system library dependency, and over hand-rolled BPF for the lower bug
+surface on a security-critical mechanism). Installed as the very last
+step before `execve`, after every mount/`pivot_root` operation Kiln's
+own init code still needs (`kilnd_core::security`'s own module docs
+explain why the ordering matters).
 
-## Linux capabilities — no active restriction
+Blocked syscalls return `EPERM` (matching Docker's own default profile's
+choice - most programs handle an error more gracefully than being killed
+by `SIGSYS`). The current list (`kilnd_core::security::denied_syscalls`)
+covers `ptrace`, `mount`/`umount2`/`pivot_root`, `reboot`,
+`kexec_load[_file]`, kernel module syscalls, `swapon`/`swapoff`,
+`iopl`/`ioperm`, the keyring syscalls, `perf_event_open`, `bpf`,
+`clock_settime`/`settimeofday`/`adjtimex`, `open_by_handle_at`,
+`userfaultfd`, `unshare`/`setns`, `quotactl`, `syslog`, and
+`lookup_dcookie`.
 
-Nothing drops or restricts the container process's capability set. What
-protection exists comes entirely as a side effect of the user namespace
-itself: capabilities a process holds inside a *non-initial* user
-namespace only have effect on resources visible from within that
-namespace (its own mounts, its own network namespace, etc.) — they don't
-translate into privilege over the host. That's a real, meaningful
-property, but it is not the same thing as an active allow-list of
-capabilities the way Docker's default (`CAP_CHOWN`, `CAP_DAC_OVERRIDE`,
-`CAP_NET_BIND_SERVICE`, and a short list of others, everything else
-dropped) is. No capability-dropping code exists anywhere in this
-workspace today.
+**Deliberate scope trade-off**: this is a curated deny-list of specific
+dangerous/rarely-needed syscalls, not a full Docker-style allow-list of
+the ~300 syscalls a container might legitimately need. A full allow-list
+is more thorough (default-deny is a stronger security posture than
+default-allow-with-exceptions) but requires real confidence that nothing
+legitimate breaks across arbitrary workloads - substantially more work
+than this pass took on. Revisiting this as a real allow-list is the
+natural next step here.
+
+Opt-out: `kiln run --security-opt seccomp=unconfined`, or
+`security_opt: [seccomp:unconfined]` per service in `kiln.yaml` - never
+the default.
+
+## Linux capabilities — implemented (Docker's own default baseline)
+
+Every container's capability *bounding set* is narrowed to the same 14
+capabilities Docker grants by default (`CAP_CHOWN`, `CAP_DAC_OVERRIDE`,
+`CAP_FOWNER`, `CAP_FSETID`, `CAP_KILL`, `CAP_SETGID`, `CAP_SETUID`,
+`CAP_SETPCAP`, `CAP_NET_BIND_SERVICE`, `CAP_NET_RAW`, `CAP_SYS_CHROOT`,
+`CAP_MKNOD`, `CAP_AUDIT_WRITE`, `CAP_SETFCAP` -
+`kilnd_core::security::BASELINE_CAPABILITIES`), built with the pure-Rust
+[`caps`](https://docs.rs/caps) crate. Everything else (`CAP_SYS_ADMIN`,
+`CAP_SYS_PTRACE`, `CAP_NET_ADMIN`, `CAP_SYS_MODULE`, ...) is dropped from
+the bounding set before `execve` - since every Kiln container becomes
+uid 0 (in its own namespace) via `setresuid`, POSIX's "uid 0 gets its
+permitted set from the bounding set on `execve`" rule is what actually
+makes this the real, enforced ceiling on the container's command, not
+just bookkeeping.
+
+This is on top of, not instead of, the user-namespace protection
+described above: even a capability in the baseline (e.g. `CAP_CHOWN`)
+only has effect on resources visible from within the container's own
+namespaces, for the reason already described there.
+
+Opt-out (widening, never on by default): `kiln run --cap-add`/
+`--cap-drop`, or `cap_add`/`cap_drop` per service in `kiln.yaml`.
+
+Verified end-to-end by `kiln-cli/tests/security_seccomp_caps.rs`: a real
+container's capability bounding set (read from the host via
+`/proc/<pid>/status`) excludes `CAP_SYS_ADMIN` and includes the baseline
+by default, `--cap-add` demonstrably restores a dropped capability, and
+a real `mount(2)` call from inside a container fails with a
+permission-denied-shaped error.
 
 ## Other isolation already in place
 
@@ -104,17 +146,14 @@ transport or trust mechanism.
 
 ## Not yet done
 
-- **Seccomp** — a default restrictive profile (Docker/runc-shaped:
-  allow-list of syscalls needed for normal use, block the dangerous/
-  rarely-needed rest), plus a way for a container to opt into a wider
-  profile when it genuinely needs one. Needs a crate choice
-  (`seccompiler` vs `libseccomp-rs` vs a hand-rolled BPF program) made
-  deliberately, with trade-offs weighed, before implementation starts.
-- **Capabilities** — a reduced default set (Docker-shaped baseline,
-  adjusted to what Kiln's own real workloads need) plus a `--cap-add`
-  escape hatch, informed by whatever the seccomp work above reveals
-  about what containers actually call.
+- **Seccomp as a full allow-list** — the current deny-list (see above)
+  blocks specific known-dangerous syscalls; a Docker-style default-deny
+  allow-list of the ~300 syscalls ordinary containers actually need
+  would be a strictly stronger posture, at the cost of real work
+  enumerating one with confidence.
 - **Visibility** — `kiln inspect --security` (or a section of the
-  existing `kiln inspect`), the same data exposed over `kilnd`'s API,
-  and a dashboard indicator — planned to land once seccomp and
-  capabilities are real, so there's something true to show.
+  existing `kiln inspect`) showing the effective seccomp/capability
+  profile a running container actually got, the same data exposed over
+  `kilnd`'s API, and a dashboard indicator. Now that seccomp and
+  capabilities are real, there's something true to show - this just
+  hasn't been built yet.

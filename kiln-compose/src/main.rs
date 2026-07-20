@@ -268,6 +268,11 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
                 environment: svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 ports: svc.ports.clone(),
                 secrets: svc.secrets.clone(),
+                security: kilnd_core::security::SecurityProfile {
+                    seccomp_unconfined: svc.security_opt.iter().any(|s| s == "seccomp:unconfined"),
+                    cap_add: svc.cap_add.clone(),
+                    cap_drop: svc.cap_drop.clone(),
+                },
             };
             let container = remote::create_container(&node, args)?;
             println!("  {name}: {} on {node_name}", &container.id[..12.min(container.id.len())]);
@@ -318,6 +323,11 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
         spec.network = Some(network_name.clone());
         spec.extra_env = svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         spec.extra_hosts = hosts.clone();
+        spec.security = kilnd_core::security::SecurityProfile {
+            seccomp_unconfined: svc.security_opt.iter().any(|s| s == "seccomp:unconfined"),
+            cap_add: svc.cap_add.clone(),
+            cap_drop: svc.cap_drop.clone(),
+        };
 
         println!("Starting {name}...");
         let container = start(store, spec, None).map_err(|e| CliError::msg(format!("service {name}: {e}")))?;

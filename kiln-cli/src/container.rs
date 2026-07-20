@@ -105,6 +105,11 @@ pub struct Container {
     /// show (e.g. in `kiln inspect`) as-is.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Seccomp/capability overrides this container was started with -
+    /// same restart-fidelity role as the fields above. See
+    /// `kilnd_core::security::SecurityProfile`'s own docs.
+    #[serde(default)]
+    pub security: kilnd_core::security::SecurityProfile,
 }
 
 impl Container {

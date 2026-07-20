@@ -75,6 +75,24 @@ pub struct Args {
     #[arg(long, default_value = "no")]
     pub restart: String,
 
+    /// Disable the default seccomp filter for this container - only
+    /// `seccomp=unconfined` is accepted (matches Docker's own
+    /// `--security-opt` flag name/value for muscle-memory familiarity;
+    /// no other `--security-opt` values are implemented).
+    #[arg(long = "security-opt")]
+    pub security_opt: Option<String>,
+
+    /// Add a Linux capability on top of the default baseline (repeatable),
+    /// e.g. `--cap-add NET_ADMIN` (the `CAP_` prefix is optional)
+    #[arg(long = "cap-add")]
+    pub cap_add: Vec<String>,
+
+    /// Remove a capability from the default baseline (repeatable) -
+    /// checked after --cap-add, so adding and dropping the same
+    /// capability nets out to it being dropped
+    #[arg(long = "cap-drop")]
+    pub cap_drop: Vec<String>,
+
     /// Image reference (name[:tag], a bare content hash, or "scratch")
     pub image: String,
 
@@ -112,6 +130,11 @@ pub fn run(store: &Store, args: Args) -> CliResult {
                 .ok_or_else(|| CliError::msg(format!("invalid -e/--env {kv:?}: expected KEY=VALUE")))
         })
         .collect::<CliResult<Vec<_>>>()?;
+    let seccomp_unconfined = match args.security_opt.as_deref() {
+        None => false,
+        Some("seccomp=unconfined") => true,
+        Some(other) => return Err(CliError::msg(format!("unsupported --security-opt {other:?} (only seccomp=unconfined is implemented)"))),
+    };
 
     let spec = RunSpec {
         image: args.image,
@@ -126,6 +149,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         ports: args.ports,
         restart_policy,
         secrets: args.secrets,
+        security: kilnd_core::security::SecurityProfile { seccomp_unconfined, cap_add: args.cap_add, cap_drop: args.cap_drop },
     };
 
     let container = start(store, spec, None)?;
@@ -166,6 +190,10 @@ pub struct RunSpec {
     /// and mount at `/run/secrets/<name>` - see `kiln_image::secrets` and
     /// `kilnd_core::rootfs::mount_tmpfs_secrets`.
     pub secrets: Vec<String>,
+    /// Seccomp/capability overrides - default (`SecurityProfile::default()`)
+    /// is the full restricted profile every container gets unless a
+    /// caller explicitly widens it. See `kilnd_core::security`'s own docs.
+    pub security: kilnd_core::security::SecurityProfile,
 }
 
 impl RunSpec {
@@ -183,6 +211,7 @@ impl RunSpec {
             ports: Vec::new(),
             restart_policy: crate::container::RestartPolicy::No,
             secrets: Vec::new(),
+            security: kilnd_core::security::SecurityProfile::default(),
         }
     }
 }
@@ -331,8 +360,9 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
     let workdir = if image.config.workdir.is_empty() { "/".to_string() } else { image.config.workdir.clone() };
     let command_for_state = command.clone();
 
+    let security = spec.security.clone();
     let child_fn = move || -> kilnd_core::Result<()> {
-        run_container_init(&merged, &overlay, &workdir, &env, &command, log_fd, &volume_mounts, &secret_files)
+        run_container_init(&merged, &overlay, &workdir, &env, &command, log_fd, &volume_mounts, &secret_files, &security)
     };
 
     let container = Container {
@@ -353,6 +383,7 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         ports: spec.ports,
         restart_policy: spec.restart_policy,
         secrets: spec.secrets,
+        security: spec.security,
     };
 
     // Created (unrestricted unless --memory/--cpus were given) before the
@@ -424,6 +455,7 @@ pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
         ports: container.ports.clone(),
         restart_policy: container.restart_policy,
         secrets: container.secrets.clone(),
+        security: container.security.clone(),
     };
     start(store, spec, Some(container.id.clone()))
 }
@@ -473,6 +505,7 @@ fn run_container_init(
     log_fd: RawFd,
     volume_mounts: &[(std::path::PathBuf, String)],
     secret_files: &[(String, Vec<u8>)],
+    security: &kilnd_core::security::SecurityProfile,
 ) -> kilnd_core::Result<()> {
     use kilnd_core::Error as RtError;
 
@@ -543,6 +576,16 @@ fn run_container_init(
         nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl)
             .map_err(|e| RtError::InvalidArgument(format!("resetting SIGPIPE: {e}")))?;
     }
+
+    // Last narrowing steps before the container's actual command replaces
+    // this process - see `kilnd_core::security`'s own docs on why this
+    // must come after every mount/pivot_root operation above (both still
+    // need CAP_SYS_ADMIN, which capability-dropping removes) and in this
+    // exact order (seccomp last: once installed, it also governs
+    // everything else this process does from here on, including the
+    // execve itself).
+    kilnd_core::security::drop_capabilities(security)?;
+    kilnd_core::security::apply_seccomp(security)?;
 
     nix::unistd::execvp(&args[0], &args).map_err(|e| RtError::InvalidArgument(format!("execvp({:?}): {e}", command[0])))?;
     unreachable!("execvp only returns on error, which is handled above")

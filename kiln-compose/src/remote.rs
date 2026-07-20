@@ -21,6 +21,12 @@ struct RunRequest {
     environment: Vec<(String, String)>,
     ports: Vec<String>,
     secrets: Vec<String>,
+    #[serde(default)]
+    seccomp_unconfined: bool,
+    #[serde(default)]
+    cap_add: Vec<String>,
+    #[serde(default)]
+    cap_drop: Vec<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -42,6 +48,7 @@ pub struct RunArgs {
     pub environment: Vec<(String, String)>,
     pub ports: Vec<String>,
     pub secrets: Vec<String>,
+    pub security: kilnd_core::security::SecurityProfile,
 }
 
 /// Creates a container on `node` - the remote-dispatch equivalent of
@@ -58,6 +65,9 @@ pub fn create_container(node: &Node, args: RunArgs) -> CliResult<RemoteContainer
         environment: args.environment,
         ports: args.ports,
         secrets: args.secrets,
+        seccomp_unconfined: args.security.seccomp_unconfined,
+        cap_add: args.security.cap_add,
+        cap_drop: args.security.cap_drop,
     };
     let resp = ureq::post(&url(node, "/containers"))
         .set("Authorization", &format!("Bearer {}", node.token))

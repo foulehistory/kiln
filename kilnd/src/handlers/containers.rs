@@ -155,6 +155,14 @@ pub struct RunRequest {
     /// mount at `/run/secrets/` - same role as `kiln run --secret`.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Same three fields as `kiln run --security-opt`/`--cap-add`/
+    /// `--cap-drop` - see `kilnd_core::security::SecurityProfile`.
+    #[serde(default)]
+    pub seccomp_unconfined: bool,
+    #[serde(default)]
+    pub cap_add: Vec<String>,
+    #[serde(default)]
+    pub cap_drop: Vec<String>,
 }
 
 pub fn create(store: &Store, req: &Request) -> Response {
@@ -182,6 +190,11 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.restart_policy = restart_policy;
     spec.ports = body.ports;
     spec.secrets = body.secrets;
+    spec.security = kilnd_core::security::SecurityProfile {
+        seccomp_unconfined: body.seccomp_unconfined,
+        cap_add: body.cap_add,
+        cap_drop: body.cap_drop,
+    };
 
     match kiln_cli::commands::run::start(store, spec, None) {
         Ok(c) => Response::json(201, &to_json(c, store)),
