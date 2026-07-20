@@ -18,6 +18,7 @@
 
 mod backup;
 mod compose;
+mod remote;
 
 use clap::{Parser, Subcommand};
 use compose::{ComposeFile, Service};
@@ -180,6 +181,19 @@ fn pick_subnet(project: &str) -> String {
 }
 
 fn resolve_service_image(store: &Store, project: &str, context_dir: &Path, name: &str, svc: &Service) -> CliResult<String> {
+    if svc.build.is_some() && svc.node.is_some() {
+        // Building remotely would mean shipping the build context over
+        // the network to a node that might not even share this
+        // machine's filesystem layout - real complexity this MVP
+        // deliberately doesn't take on (see the module docs on multi-
+        // host's deliberately narrow scope). `build:` + `node:` together
+        // fails clearly here rather than either silently building
+        // locally and running remotely (confusing: which image?) or
+        // trying to build on the remote node.
+        return Err(CliError::msg(format!(
+            "service {name:?}: `build:` + `node:` together isn't supported - build and push an image, then reference it with `image:` instead"
+        )));
+    }
     if let Some(build_path) = &svc.build {
         let build_ctx = context_dir.join(build_path);
         let kilnfile_path = build_ctx.join("Kilnfile");
@@ -227,6 +241,44 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
     for name in &order {
         let svc = &compose.services[name];
         let container_name = format!("{project}_{name}");
+
+        if let Some(node_name) = &svc.node {
+            let node = kiln_cli::commands::node::find_node(store, node_name)
+                .ok_or_else(|| CliError::msg(format!("service {name}: no such node: {node_name} (see `kiln node ls`)")))?;
+
+            if let Some(existing) = remote::get_container(&node, &container_name) {
+                if existing.status == "running" {
+                    println!("{name} already running on {node_name} ({})", &existing.id[..12.min(existing.id.len())]);
+                    continue;
+                }
+            }
+
+            let image = resolve_service_image(store, project, context_dir, name, svc)?;
+            if !svc.ports.is_empty() {
+                remote::ensure_remote_network(&node, &network_name, &pick_subnet(project));
+            }
+
+            println!("Starting {name} on {node_name}...");
+            let args = remote::RunArgs {
+                name: container_name,
+                image,
+                command: svc.command.clone().map(|c| c.into_vec()).unwrap_or_default(),
+                volumes: svc.volumes.clone(),
+                network: if svc.ports.is_empty() { None } else { Some(network_name.clone()) },
+                environment: svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                ports: svc.ports.clone(),
+                secrets: svc.secrets.clone(),
+            };
+            let container = remote::create_container(&node, args)?;
+            println!("  {name}: {} on {node_name}", &container.id[..12.min(container.id.len())]);
+            // Deliberately no `hosts` entry: cross-host service discovery
+            // (a remote service resolving a local one by name, or vice
+            // versa) isn't in scope for this first pass - see the module
+            // docs on multi-host's narrow MVP scope. A same-host service
+            // started after this one still gets nothing from it either,
+            // for the same reason.
+            continue;
+        }
 
         // Reap any dead containers already using this name before looking
         // one up - e.g. after a host/VM restart that killed a container's
@@ -284,8 +336,24 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
 }
 
 fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
-    for name in compose.services.keys() {
+    let mut remote_nodes_used = std::collections::HashSet::new();
+
+    for (name, svc) in &compose.services {
         let container_name = format!("{project}_{name}");
+
+        if let Some(node_name) = &svc.node {
+            let Some(node) = kiln_cli::commands::node::find_node(store, node_name) else {
+                eprintln!("kiln-compose: removing {container_name}: no such node: {node_name}");
+                continue;
+            };
+            match remote::remove_container(&node, &container_name) {
+                Ok(()) => println!("removed {container_name} on {node_name}"),
+                Err(e) => eprintln!("kiln-compose: removing {container_name} on {node_name}: {e}"),
+            }
+            remote_nodes_used.insert(node_name.clone());
+            continue;
+        }
+
         // Not Container::resolve: it refuses to pick among same-named
         // entries once there's more than one (e.g. a leftover dead
         // container from before a host/VM restart, alongside a live one
@@ -322,13 +390,33 @@ fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
         }
     }
 
+    // Same teardown, per remote node that actually had a service on it -
+    // best-effort like the local removal above (a node that's gone
+    // unreachable since `up` shouldn't stop `down` from cleaning up
+    // everything else).
+    for node_name in &remote_nodes_used {
+        if let Some(node) = kiln_cli::commands::node::find_node(store, node_name) {
+            let _ = remote::remove_network(&node, &network_name);
+        }
+    }
+
     Ok(())
 }
 
 fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
     println!("{:<20}{:<14}{:<14}{:<8}COMMAND", "SERVICE", "CONTAINER ID", "STATUS", "PID");
-    for name in compose.services.keys() {
+    for (name, svc) in &compose.services {
         let container_name = format!("{project}_{name}");
+
+        if let Some(node_name) = &svc.node {
+            let found = kiln_cli::commands::node::find_node(store, node_name).and_then(|node| remote::get_container(&node, &container_name));
+            match found {
+                Some(c) => println!("{:<20}{:<14}{:<14}{:<8}(on {node_name})", name, &c.id[..12.min(c.id.len())], c.status, ""),
+                None => println!("{:<20}{:<14}{:<14}{:<8}", name, "-", format!("not created (on {node_name})"), ""),
+            }
+            continue;
+        }
+
         match Container::resolve(store, &container_name) {
             Some(mut c) => {
                 c.refresh(store);
@@ -346,11 +434,41 @@ fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
 }
 
 fn cmd_logs(store: &Store, project: &str, compose: &ComposeFile, follow: bool) -> CliResult {
-    let containers: Vec<Container> =
-        compose.services.keys().filter_map(|name| Container::resolve(store, &format!("{project}_{name}"))).collect();
+    for (name, svc) in &compose.services {
+        let Some(node_name) = &svc.node else { continue };
+        let container_name = format!("{project}_{name}");
+        if follow {
+            // Following a remote node's logs would need its own
+            // long-lived connection/thread per node - deferred rather
+            // than half-implemented (see remote.rs's own docs).
+            println!("{name} | (remote services on {node_name} don't support -f yet - showing nothing here)");
+            continue;
+        }
+        let Some(node) = kiln_cli::commands::node::find_node(store, node_name) else {
+            eprintln!("kiln-compose: {name}: no such node: {node_name}");
+            continue;
+        };
+        match remote::logs(&node, &container_name) {
+            Ok(content) => {
+                for line in content.lines() {
+                    println!("{name} | {line}");
+                }
+            }
+            Err(e) => eprintln!("kiln-compose: fetching logs for {name} on {node_name}: {e}"),
+        }
+    }
+
+    let containers: Vec<Container> = compose
+        .services
+        .iter()
+        .filter(|(_, svc)| svc.node.is_none())
+        .filter_map(|(name, _)| Container::resolve(store, &format!("{project}_{name}")))
+        .collect();
 
     if containers.is_empty() {
-        println!("no containers for this project - run `kiln-compose up` first");
+        if compose.services.values().all(|s| s.node.is_none()) {
+            println!("no containers for this project - run `kiln-compose up` first");
+        }
         return Ok(());
     }
 

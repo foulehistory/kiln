@@ -70,6 +70,13 @@ impl Request {
     pub fn is_upgrade_to(&self, protocol: &str) -> bool {
         self.headers.get("upgrade").map(|v| v.eq_ignore_ascii_case(protocol)).unwrap_or(false)
     }
+
+    /// The bearer token from an `Authorization: Bearer <token>` header, if
+    /// present - used by `kilnd`'s optional remote listener (see its own
+    /// `server.rs` docs) to authenticate a non-loopback caller.
+    pub fn bearer_token(&self) -> Option<&str> {
+        self.headers.get("authorization")?.strip_prefix("Bearer ")
+    }
 }
 
 /// RFC 3986 percent-decoding (`%XX` -> that byte) - deliberately not

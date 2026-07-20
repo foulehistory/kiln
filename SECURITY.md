@@ -76,6 +76,32 @@ workspace today.
   mount table — nothing mounted inside a container is visible on the
   host or in any other container, and vice versa.
 
+## Remote `kilnd` (multi-host) — opt-in, token-authenticated
+
+`kilnd` is loopback-only by default (see above) — nothing about that
+changes. `kiln node`'s multi-host support (`kiln-compose`'s `node:`
+field) needs *some* `kilnd` reachable from another machine, so it adds
+one narrow, entirely opt-in exception: if `KILN_REMOTE_TOKEN` is set,
+`kilnd` also binds a **second**, separate TCP port (`0.0.0.0`, default
+`7868`, `KILN_REMOTE_PORT` to change it) — the existing loopback port
+(`7867`) is completely unaffected, still no token required there.
+
+Every request on the remote port must carry `Authorization: Bearer
+<token>` matching `KILN_REMOTE_TOKEN` or gets a 401 before reaching any
+handler. There's no per-request rate limiting or account system — one
+shared token grants full access to that `kilnd`'s entire API (create
+any container, read any container's logs, etc.), the same trust level
+the loopback port already grants anyone reaching `127.0.0.1` on that
+machine. Treat the token like a root credential: pass it out of band
+(never in `kiln.yaml`, which is often checked into version control),
+and run this over a network you already trust (a VPN, a private subnet)
+rather than the open internet — there's no TLS here, so the token and
+every request/response cross the wire in the clear.
+
+`kiln-compose`'s own dispatch to a `node:`-tagged service reuses
+exactly this same authenticated API — it does not add a second
+transport or trust mechanism.
+
 ## Not yet done
 
 - **Seccomp** — a default restrictive profile (Docker/runc-shaped:

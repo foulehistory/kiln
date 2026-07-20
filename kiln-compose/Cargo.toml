@@ -1,6 +1,6 @@
 [package]
 name = "kiln-compose"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2021"
 description = "kiln-compose: multi-container orchestration for Kiln, driven by a kiln.yaml file."
 license = "Apache-2.0"
@@ -20,6 +20,7 @@ serde_yaml = "0.9"
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 tar = "0.4"
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3"

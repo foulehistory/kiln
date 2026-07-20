@@ -664,7 +664,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "kiln-cli"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "clap",
  "flate2",
@@ -678,11 +678,12 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 1.0.69",
+ "ureq",
 ]
 
 [[package]]
 name = "kiln-compose"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "clap",
  "kiln-cli",
@@ -695,11 +696,12 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 1.0.69",
+ "ureq",
 ]
 
 [[package]]
 name = "kiln-image"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",
@@ -721,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-registry"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "argon2",
  "clap",
@@ -737,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "kilnd"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "clap",
  "kiln-cli",
@@ -752,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "kilnd-core"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "aya",
  "libc",

@@ -8,6 +8,7 @@ pub mod inspect;
 pub mod key;
 pub mod logs;
 pub mod network;
+pub mod node;
 pub mod ps;
 pub mod pull;
 pub mod push;

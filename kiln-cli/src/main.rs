@@ -69,6 +69,9 @@ enum Command {
     /// Operate on a single image (currently: vulnerability scanning)
     #[command(subcommand)]
     Image(commands::image::Command),
+    /// Manage remote nodes for kiln-compose's multi-host `node:` dispatch
+    #[command(subcommand)]
+    Node(commands::node::Command),
 }
 
 fn main() {
@@ -105,6 +108,7 @@ fn main() {
         Command::Key(cmd) => commands::key::run(cmd),
         Command::Secret(cmd) => commands::secret::run(&store, cmd),
         Command::Image(cmd) => commands::image::run(&store, cmd),
+        Command::Node(cmd) => commands::node::run(&store, cmd),
     };
 
     if let Err(e) = result {

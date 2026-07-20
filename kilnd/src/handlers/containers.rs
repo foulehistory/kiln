@@ -151,6 +151,10 @@ pub struct RunRequest {
     /// `"no"` (default), `"always"`, or `"on-failure"`.
     #[serde(default)]
     pub restart: Option<String>,
+    /// Names of secrets (already created via `kiln secret create`) to
+    /// mount at `/run/secrets/` - same role as `kiln run --secret`.
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 pub fn create(store: &Store, req: &Request) -> Response {
@@ -177,6 +181,7 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.cpu_limit = body.cpus;
     spec.restart_policy = restart_policy;
     spec.ports = body.ports;
+    spec.secrets = body.secrets;
 
     match kiln_cli::commands::run::start(store, spec, None) {
         Ok(c) => Response::json(201, &to_json(c, store)),

@@ -53,6 +53,13 @@ pub struct Service {
     pub secrets: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Name of a `kiln node`-registered remote host to run this service
+    /// on instead of locally - absent means local, same as today. See
+    /// `main.rs`'s `resolve_service_image`/`cmd_up` for the dispatch
+    /// logic, and `kiln-cli/src/commands/node.rs` for the registry this
+    /// name is looked up in.
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 /// Accepts either Compose's shell-string form (`command: "echo hi"`) or
