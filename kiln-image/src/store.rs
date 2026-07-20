@@ -127,6 +127,26 @@ impl Store {
         self.root.join("containers")
     }
 
+    /// A marker that this exact image content was pulled through a
+    /// signature check that passed - deliberately *not* a field on
+    /// `Image` itself, since `Image`'s id is a content hash and this
+    /// isn't a property of the content (two pulls of the byte-identical
+    /// image, one verified and one via `--insecure-skip-verify`, must
+    /// still resolve to the same id). Never written for a locally built
+    /// image or a Docker Hub pull - both have no signature concept at
+    /// all, which is different from "signed but unverified".
+    fn signature_marker_path(&self, id: Hash) -> PathBuf {
+        self.images_dir().join(format!("{id}.verified"))
+    }
+
+    pub fn mark_signature_verified(&self, id: Hash) -> Result<()> {
+        write_atomically(&self.signature_marker_path(id), b"1")
+    }
+
+    pub fn is_signature_verified(&self, id: Hash) -> bool {
+        self.signature_marker_path(id).is_file()
+    }
+
     /// Point `name:tag` at `id`. Overwrites any previous tag of the same
     /// name - tags are mutable pointers (like a git branch), unlike the
     /// content-addressed objects they point at.

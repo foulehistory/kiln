@@ -60,6 +60,9 @@ enum Command {
     /// Manage networks
     #[command(subcommand)]
     Network(commands::network::Command),
+    /// Manage the local image-signing identity
+    #[command(subcommand)]
+    Key(commands::key::Command),
 }
 
 fn main() {
@@ -93,6 +96,7 @@ fn main() {
         Command::Cp(args) => commands::cp::run(&store, args),
         Command::Volume(cmd) => commands::volume::run(&store, cmd),
         Command::Network(cmd) => commands::network::run(&store, cmd),
+        Command::Key(cmd) => commands::key::run(cmd),
     };
 
     if let Err(e) = result {

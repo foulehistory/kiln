@@ -28,6 +28,12 @@ pub fn route(store: &RegistryStore, tokens: &TokenStore, req: &Request, stream: 
         ping(req)
     } else if segments == ["token"] {
         token_endpoint(store, tokens, req)
+    } else if let ["users", username, "pubkey"] = segments.as_slice() {
+        match req.method.as_str() {
+            "GET" => get_pubkey(store, username),
+            "PUT" => put_pubkey(store, req, username),
+            _ => Response::text(404, "not found"),
+        }
     } else if segments.first() == Some(&"v2") {
         match split_repo_and_op(&segments[1..]) {
             Some((repo, op)) => dispatch(store, tokens, req, &repo.join("/"), op),
@@ -66,6 +72,8 @@ fn dispatch(store: &RegistryStore, tokens: &TokenStore, req: &Request, repositor
         ("PUT", ["blobs", "uploads", _id]) => complete_upload(store, tokens, req, repository),
         ("PUT", ["manifests", tag]) => put_manifest(store, tokens, req, repository, tag),
         ("GET", ["manifests", tag]) => get_manifest(store, repository, tag),
+        ("PUT", ["manifests", tag, "signature"]) => put_signature(store, tokens, req, repository, tag),
+        ("GET", ["manifests", tag, "signature"]) => get_signature(store, repository, tag),
         _ => Response::text(404, "not found"),
     }
 }
@@ -106,15 +114,9 @@ fn token_endpoint(store: &RegistryStore, tokens: &TokenStore, req: &Request) -> 
     };
 
     if actions.iter().any(|a| a == "push") {
-        let Some((username, password)) = basic_auth(req) else {
+        let Some(username) = verify_basic_auth(store, req) else {
             return Response::text(401, "authentication required for push");
         };
-        let Some(user) = store.find_user(&username) else {
-            return Response::text(401, "invalid credentials");
-        };
-        if !auth::verify_password(&password, &user.password_hash) {
-            return Response::text(401, "invalid credentials");
-        }
         let owner = repository.split('/').next().unwrap_or("");
         if owner != username {
             return Response::text(403, format!("{username} may not push to {repository}"));
@@ -123,6 +125,21 @@ fn token_endpoint(store: &RegistryStore, tokens: &TokenStore, req: &Request) -> 
 
     let token = tokens.issue(repository, actions);
     Response::json(200, &TokenResponse { token })
+}
+
+/// `Some(username)` iff `req` carries a valid `Authorization: Basic`
+/// header for a real account - shared by the `/token` push-scope check
+/// and the `PUT /users/:username/pubkey` endpoint, both of which need
+/// "prove you are this account" rather than the Bearer-token flow used
+/// for repository actions.
+fn verify_basic_auth(store: &RegistryStore, req: &Request) -> Option<String> {
+    let (username, password) = basic_auth(req)?;
+    let user = store.find_user(&username)?;
+    if auth::verify_password(&password, &user.password_hash) {
+        Some(username)
+    } else {
+        None
+    }
 }
 
 fn parse_scope(scope: &str) -> Option<(String, Vec<String>)> {
@@ -241,6 +258,65 @@ fn get_manifest(store: &RegistryStore, repository: &str, tag: &str) -> Response 
             body: bytes,
         },
         None => Response::text(404, "manifest not found"),
+    }
+}
+
+fn put_signature(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str, tag: &str) -> Response {
+    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
+        return Response::text(401, "push token required");
+    }
+    match store.write_signature(repository, tag, &req.body) {
+        Some(Ok(())) => Response { status: 201, headers: Vec::new(), body: Vec::new() },
+        Some(Err(e)) => Response::text(500, format!("writing signature: {e}")),
+        None => Response::text(400, "invalid tag"),
+    }
+}
+
+/// Public, like `get_manifest` - anyone pulling needs to be able to fetch
+/// a signature to verify it, without first needing a token.
+fn get_signature(store: &RegistryStore, repository: &str, tag: &str) -> Response {
+    match store.signature_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
+        Some(bytes) => Response { status: 200, headers: vec![("Content-Type".into(), "application/json".into())], body: bytes },
+        None => Response::text(404, "no signature for this manifest"),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct PubkeyResponse {
+    public_key: String,
+}
+
+/// Public - a puller needs to fetch the repository owner's key without
+/// authenticating as anyone.
+fn get_pubkey(store: &RegistryStore, username: &str) -> Response {
+    match store.find_user(username).and_then(|u| u.public_key) {
+        Some(public_key) => Response::json(200, &PubkeyResponse { public_key }),
+        None => Response::text(404, "no public key on file for this user"),
+    }
+}
+
+/// Self-service: `username` in the URL must match the account
+/// `Authorization: Basic` authenticates as - nobody can set another
+/// user's key, mirroring the same "prove you own this namespace" shape
+/// already used for push authorization.
+fn put_pubkey(store: &RegistryStore, req: &Request, username: &str) -> Response {
+    let Some(authenticated) = verify_basic_auth(store, req) else {
+        return Response::text(401, "authentication required");
+    };
+    if authenticated != username {
+        return Response::text(403, "cannot set another user's public key");
+    }
+    #[derive(serde::Deserialize)]
+    struct Body {
+        public_key: String,
+    }
+    let body: Body = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    match store.set_public_key(username, &body.public_key) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "ok": true })),
+        Err(e) => Response::text(500, format!("saving public key: {e}")),
     }
 }
 

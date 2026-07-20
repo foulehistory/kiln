@@ -4,9 +4,10 @@
 //!
 //! ```text
 //! <data-dir>/
-//!   users.json                          # [{username, password_hash}]
-//!   blobs/sha256/<hex>                  # content-addressed, shared across every repository
-//!   manifests/<repository>/<tag>.json   # e.g. manifests/foulehistory/palworld/latest.json
+//!   users.json                              # [{username, password_hash, public_key}]
+//!   blobs/sha256/<hex>                      # content-addressed, shared across every repository
+//!   manifests/<repository>/<tag>.json       # e.g. manifests/foulehistory/palworld/latest.json
+//!   manifests/<repository>/<tag>.sig.json   # {"algorithm":"ed25519","signature":"<hex>"}, if signed
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,11 @@ use std::path::{Path, PathBuf};
 pub struct User {
     pub username: String,
     pub password_hash: String,
+    /// Hex-encoded ed25519 public key, set via `PUT /users/:username/pubkey`
+    /// (self-service, authenticated as that user) once they first push a
+    /// signed image - `None` until then, and for users who never sign.
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 pub struct RegistryStore {
@@ -45,6 +51,21 @@ impl RegistryStore {
 
     pub fn find_user(&self, username: &str) -> Option<User> {
         self.load_users().into_iter().find(|u| u.username == username)
+    }
+
+    /// Sets `username`'s public key. The caller (the `PUT
+    /// /users/:username/pubkey` handler) has already authenticated the
+    /// request as this exact user via `verify_basic_auth`, which itself
+    /// requires the account to already exist - so `username` is always
+    /// found here in practice; `Ok(())` no-ops if it somehow isn't rather
+    /// than erroring, since there'd be nothing meaningful to report.
+    pub fn set_public_key(&self, username: &str, public_key_hex: &str) -> io::Result<()> {
+        let mut users = self.load_users();
+        if let Some(u) = users.iter_mut().find(|u| u.username == username) {
+            u.public_key = Some(public_key_hex.to_string());
+            self.save_users(&users)?;
+        }
+        Ok(())
     }
 
     /// `digest` must be `sha256:<64 lowercase hex chars>` - the only
@@ -102,6 +123,25 @@ impl RegistryStore {
         let path = self.manifest_path(repository, tag)?;
         Some((|| {
             std::fs::create_dir_all(path.parent().expect("manifest_path always has a manifests/... parent"))?;
+            std::fs::write(&path, data)
+        })())
+    }
+
+    /// A sibling of `manifest_path` - same sanitized `<repo>/<tag>` path,
+    /// `.sig.json` instead of `.json`. Never written unless the pusher had
+    /// a local signing key configured; its mere presence is what "signed"
+    /// means from the server's point of view.
+    pub fn signature_path(&self, repository: &str, tag: &str) -> Option<PathBuf> {
+        if tag.is_empty() || tag.contains('/') || tag.contains("..") {
+            return None;
+        }
+        Some(self.repo_dir(repository)?.join(format!("{tag}.sig.json")))
+    }
+
+    pub fn write_signature(&self, repository: &str, tag: &str, data: &[u8]) -> Option<io::Result<()>> {
+        let path = self.signature_path(repository, tag)?;
+        Some((|| {
+            std::fs::create_dir_all(path.parent().expect("signature_path always has a manifests/... parent"))?;
             std::fs::write(&path, data)
         })())
     }

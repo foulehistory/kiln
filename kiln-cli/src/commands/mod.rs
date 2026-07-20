@@ -4,6 +4,7 @@ pub mod exec;
 pub mod gc;
 pub mod images;
 pub mod inspect;
+pub mod key;
 pub mod logs;
 pub mod network;
 pub mod ps;

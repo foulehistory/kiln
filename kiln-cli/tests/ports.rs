@@ -33,7 +33,7 @@ fn published_port_is_reachable_from_the_host() {
     let store_dir = tempfile::tempdir().unwrap();
     let store = Store::open(store_dir.path()).unwrap();
 
-    if let Err(e) = registry::pull(&store, "busybox:latest") {
+    if let Err(e) = registry::pull(&store, "busybox:latest", false) {
         eprintln!("skipping: could not pull busybox from Docker Hub: {e}");
         return;
     }

@@ -31,7 +31,7 @@ fn pull_busybox_and_build_from_it() {
     let store_dir = tempfile::tempdir().unwrap();
     let store = Store::open(store_dir.path()).unwrap();
 
-    let image_id = match registry::pull(&store, "busybox:latest") {
+    let image_id = match registry::pull(&store, "busybox:latest", false) {
         Ok(id) => id,
         Err(e) => {
             eprintln!("skipping: could not pull busybox from Docker Hub: {e}");

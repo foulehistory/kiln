@@ -283,7 +283,11 @@ struct ImageConfigJson {
     config: Option<ContainerConfig>,
 }
 
-fn fetch_manifest(base_url: &str, repository: &str, reference: &str, token: Option<&str>) -> Result<ManifestV2> {
+/// Returns the manifest both parsed *and* as the exact raw bytes the
+/// registry sent - signature verification needs those exact bytes (the
+/// same ones `push()` signed), not a re-serialization of `ManifestV2`
+/// (a different, narrower struct than what actually got signed).
+fn fetch_manifest(base_url: &str, repository: &str, reference: &str, token: Option<&str>) -> Result<(Vec<u8>, ManifestV2)> {
     let url = format!("{base_url}/v2/{repository}/manifests/{reference}");
     let req = with_auth(ureq::get(&url), token).set("Accept", MANIFEST_ACCEPT);
     let resp = req
@@ -305,7 +309,8 @@ fn fetch_manifest(base_url: &str, repository: &str, reference: &str, token: Opti
             .ok_or_else(|| Error::Registry(format!("no linux/amd64 entry for {repository}:{reference}")))?;
         fetch_manifest(base_url, repository, &entry.digest, token)
     } else {
-        serde_json::from_str(&body).map_err(|e| Error::Registry(format!("parsing manifest: {e}")))
+        let parsed = serde_json::from_str(&body).map_err(|e| Error::Registry(format!("parsing manifest: {e}")))?;
+        Ok((body.into_bytes(), parsed))
     }
 }
 
@@ -525,11 +530,27 @@ fn pull_layer(store: &Store, base_url: &str, repository: &str, digest: &str, tok
 /// `"library/debian:bookworm"`, or `"localhost:5555/echo:latest"`),
 /// convert it into Kiln's image format, save it to `store`, tag it as
 /// `<repository>:<tag>`, and return its image id.
-pub fn pull(store: &Store, reference: &str) -> Result<Hash> {
+///
+/// Signature verification only ever applies to an explicit-host registry
+/// (Docker Hub has no notion of Kiln-native signatures at all, so
+/// `reference.host.is_none()` skips this entirely, `skip_verify` or not).
+/// For an explicit host, the default is to *require* a valid signature -
+/// no signature, an unparseable one, or one that doesn't verify against
+/// the repository owner's registered public key all fail the pull
+/// outright. `skip_verify: true` (`kiln pull --insecure-skip-verify`)
+/// bypasses this - a deliberate, visible opt-out rather than a permissive
+/// default.
+pub fn pull(store: &Store, reference: &str, skip_verify: bool) -> Result<Hash> {
     let reference = Reference::parse(reference);
     let base_url = reference.base_url();
     let token = get_token(&reference)?;
-    let manifest = fetch_manifest(&base_url, &reference.repository, &reference.tag, token.as_deref())?;
+    let (manifest_bytes, manifest) = fetch_manifest(&base_url, &reference.repository, &reference.tag, token.as_deref())?;
+
+    let mut verified = false;
+    if reference.host.is_some() && !skip_verify {
+        verify_signature(&base_url, &reference.repository, &reference.tag, &manifest_bytes, token.as_deref())?;
+        verified = true;
+    }
 
     let config_bytes = fetch_blob_bytes(&base_url, &reference.repository, &manifest.config.digest, token.as_deref())?;
     let image_config_json: ImageConfigJson =
@@ -560,16 +581,53 @@ pub fn pull(store: &Store, reference: &str) -> Result<Hash> {
     let image = Image { layers, config };
     let image_id = image.save(store)?;
     store.tag(&reference.repository, &reference.tag, image_id)?;
+    if verified {
+        store.mark_signature_verified(image_id)?;
+    }
     Ok(image_id)
+}
+
+#[derive(Deserialize)]
+struct SignatureFile {
+    signature: String,
+}
+
+#[derive(Deserialize)]
+struct PubkeyResponse {
+    public_key: String,
+}
+
+/// Fetches `<repo>:<tag>`'s signature and the repository owner's
+/// registered public key, then verifies the signature covers exactly
+/// `manifest_bytes`. Fails closed: any missing piece (no signature, owner
+/// has no key on file) or a genuine verification failure is an error, not
+/// a silent "treat as unsigned".
+fn verify_signature(base_url: &str, repository: &str, tag: &str, manifest_bytes: &[u8], token: Option<&str>) -> Result<()> {
+    let sig_url = format!("{base_url}/v2/{repository}/manifests/{tag}/signature");
+    let sig_resp = with_auth(ureq::get(&sig_url), token)
+        .call()
+        .map_err(|e| Error::Registry(format!("{repository}:{tag} has no valid signature ({e}) - re-run with --insecure-skip-verify to pull anyway")))?;
+    let sig_file: SignatureFile = sig_resp.into_json().map_err(|e| Error::Registry(format!("parsing signature response: {e}")))?;
+
+    let owner = repository.split('/').next().unwrap_or(repository);
+    let pubkey_url = format!("{base_url}/users/{owner}/pubkey");
+    let pubkey_resp = with_auth(ureq::get(&pubkey_url), token)
+        .call()
+        .map_err(|e| Error::Registry(format!("could not fetch {owner}'s public key ({e}) - re-run with --insecure-skip-verify to pull anyway")))?;
+    let pubkey: PubkeyResponse = pubkey_resp.into_json().map_err(|e| Error::Registry(format!("parsing public key response: {e}")))?;
+
+    crate::signing::verify(&pubkey.public_key, manifest_bytes, &sig_file.signature)
+        .map_err(|e| Error::Registry(format!("signature verification failed for {repository}:{tag}: {e}")))
 }
 
 // --- Push -------------------------------------------------------------
 //
 // Implemented against the standard OCI Distribution push flow (POST to
 // start an upload session, PATCH/PUT the blob, PUT the manifest last so
-// it's the one atomic "publish" step) but, as the module docs say, not
-// exercised against a real registry here. Treat as a solid starting point
-// to validate against real credentials, not as something to trust blindly.
+// it's the one atomic "publish" step) - verified against a real registry
+// (kiln-registry, this workspace's own) end to end, including the two
+// auth bugs that surfaced doing so (see base_url's and get_push_token's
+// own doc comments).
 
 #[derive(Serialize)]
 struct OciDescriptor {
@@ -683,6 +741,64 @@ pub fn push(store: &Store, image_id: &Hash, reference: &str) -> Result<()> {
         .set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
         .send_bytes(&manifest_json)
         .map_err(|e| Error::Registry(format!("pushing manifest: {e}")))?;
+
+    // Signing only exists for an explicit-host registry (Docker Hub has
+    // no notion of it), and only if the pusher has a local key configured
+    // - unconfigured is the common case for anyone who only ever pulls,
+    // and pushing unsigned is allowed (the *pull* side is what enforces
+    // strictness, by default requiring what this step produces).
+    if reference.host.is_some() {
+        if let Some(signing_key) = crate::signing::load_signing_key() {
+            sign_and_publish(&base_url, &reference.repository, &reference.tag, &manifest_json, &signing_key, token.as_deref())?;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct SignaturePayload {
+    algorithm: &'static str,
+    signature: String,
+}
+
+#[derive(Serialize)]
+struct PubkeyPayload {
+    public_key: String,
+}
+
+/// Signs `manifest_json` (the exact bytes just pushed) and uploads both
+/// the signature and the pusher's public key. Publishing the key on every
+/// signed push (rather than requiring a separate one-time step) is
+/// idempotent and self-healing - `kiln-registry`'s `PUT
+/// /users/:username/pubkey` just overwrites, so there's no "did I already
+/// publish it" state to track client-side.
+fn sign_and_publish(base_url: &str, repository: &str, tag: &str, manifest_json: &[u8], signing_key: &ed25519_dalek::SigningKey, token: Option<&str>) -> Result<()> {
+    let signature = crate::signing::sign(signing_key, manifest_json);
+    let sig_url = format!("{base_url}/v2/{repository}/manifests/{tag}/signature");
+    let sig_body = serde_json::to_vec(&SignaturePayload { algorithm: "ed25519", signature })
+        .map_err(|e| Error::Registry(e.to_string()))?;
+    with_auth(ureq::put(&sig_url), token)
+        .set("Content-Type", "application/json")
+        .send_bytes(&sig_body)
+        .map_err(|e| Error::Registry(format!("pushing signature: {e}")))?;
+
+    // `PUT /users/:username/pubkey` is a "prove you are this account"
+    // operation, not a repository action - it authenticates with the same
+    // `Authorization: Basic` credentials used to *obtain* a push token in
+    // the first place, not the push token itself (which only ever proves
+    // "granted push on this one repository", nothing about account
+    // identity beyond that).
+    let owner = repository.split('/').next().unwrap_or(repository);
+    let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+    let pubkey_url = format!("{base_url}/users/{owner}/pubkey");
+    let pubkey_body =
+        serde_json::to_vec(&PubkeyPayload { public_key }).map_err(|e| Error::Registry(e.to_string()))?;
+    let mut req = ureq::put(&pubkey_url).set("Content-Type", "application/json");
+    if let Some((user, pass)) = explicit_host_credentials() {
+        req = req.set("Authorization", &format!("Basic {}", base64_encode(&format!("{user}:{pass}"))));
+    }
+    req.send_bytes(&pubkey_body).map_err(|e| Error::Registry(format!("publishing public key: {e}")))?;
 
     Ok(())
 }

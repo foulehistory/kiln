@@ -48,7 +48,7 @@ fn kiln_run_remaps_a_real_container_to_the_subordinate_id_range() {
     // A real, runnable rootfs is needed - unlike the cgroup/restart-policy
     // tests, this one has to inspect a *live* process, so `scratch` (no
     // binaries, exec fails almost instantly) won't do.
-    if let Err(e) = registry::pull(&store, "busybox:latest") {
+    if let Err(e) = registry::pull(&store, "busybox:latest", false) {
         eprintln!("skipping: could not pull busybox from Docker Hub: {e}");
         return;
     }

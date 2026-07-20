@@ -1,6 +1,6 @@
 [package]
 name = "kiln-image"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2021"
 description = "Content-addressed image format, Kilnfile builder, and OCI registry client for Kiln."
 license = "Apache-2.0"
@@ -19,3 +19,5 @@ flate2 = "1"
 ureq = { version = "2", features = ["json"] }
 walkdir = "2"
 tempfile = "3"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"

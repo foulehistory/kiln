@@ -95,7 +95,7 @@ fn main() {
             let password_hash = auth::hash_password(&password);
             match users.iter_mut().find(|u| u.username == username) {
                 Some(existing) => existing.password_hash = password_hash,
-                None => users.push(User { username: username.clone(), password_hash }),
+                None => users.push(User { username: username.clone(), password_hash, public_key: None }),
             }
             if let Err(e) = store.save_users(&users) {
                 eprintln!("kiln-registry: saving users: {e}");

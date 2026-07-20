@@ -85,6 +85,12 @@ pub struct ImageDetailJson {
     /// text, no timestamps, nothing that isn't actual file content/
     /// metadata) - so this is only ever the layer stack itself.
     pub layers: Vec<LayerDetailJson>,
+    /// `true` iff this exact image content was pulled through a
+    /// signature check that passed - never true for a locally built
+    /// image or a Docker Hub pull (neither has a signature concept at
+    /// all), and never true for a pull done with
+    /// `--insecure-skip-verify` even if the image happened to be signed.
+    pub signature_verified: bool,
 }
 
 pub fn inspect(store: &Store, id: &str) -> Response {
@@ -130,6 +136,7 @@ pub fn inspect(store: &Store, id: &str) -> Response {
             workdir: img.config.workdir,
             exposed_ports: img.config.exposed_ports,
             layers,
+            signature_verified: store.is_signature_verified(hash),
         },
     )
 }
@@ -137,6 +144,8 @@ pub fn inspect(store: &Store, id: &str) -> Response {
 #[derive(Deserialize)]
 pub struct PullRequest {
     pub reference: String,
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
 }
 
 /// Blocks the request's own connection thread for the duration of the
@@ -152,7 +161,7 @@ pub fn pull(store: &Store, req: &Request) -> Response {
     if body.reference.trim().is_empty() {
         return Response::text(400, "image reference must not be empty");
     }
-    match registry::pull(store, &body.reference) {
+    match registry::pull(store, &body.reference, body.insecure_skip_verify) {
         Ok(id) => Response::json(201, &serde_json::json!({ "id": id.to_string() })),
         Err(e) => Response::text(502, format!("{e}")),
     }
