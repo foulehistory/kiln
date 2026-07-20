@@ -74,19 +74,21 @@ pub fn sign(key: &SigningKey, data: &[u8]) -> String {
 /// otherwise (bad hex, wrong length, or genuine verification failure -
 /// callers don't need to distinguish, just refuse the pull either way).
 pub fn verify(public_key_hex: &str, data: &[u8], signature_hex: &str) -> Result<(), String> {
-    let pub_bytes: [u8; 32] =
-        hex::decode(public_key_hex).map_err(|e| format!("invalid public key hex: {e}"))?
-            .try_into()
-            .map_err(|_| "public key must be 32 bytes".to_string())?;
+    let pub_bytes: [u8; 32] = hex::decode(public_key_hex)
+        .map_err(|e| format!("invalid public key hex: {e}"))?
+        .try_into()
+        .map_err(|_| "public key must be 32 bytes".to_string())?;
     let verifying_key = VerifyingKey::from_bytes(&pub_bytes).map_err(|e| format!("invalid public key: {e}"))?;
 
-    let sig_bytes: [u8; 64] =
-        hex::decode(signature_hex).map_err(|e| format!("invalid signature hex: {e}"))?
-            .try_into()
-            .map_err(|_| "signature must be 64 bytes".to_string())?;
+    let sig_bytes: [u8; 64] = hex::decode(signature_hex)
+        .map_err(|e| format!("invalid signature hex: {e}"))?
+        .try_into()
+        .map_err(|_| "signature must be 64 bytes".to_string())?;
     let signature = Signature::from_bytes(&sig_bytes);
 
-    verifying_key.verify(data, &signature).map_err(|e| format!("signature verification failed: {e}"))
+    verifying_key
+        .verify(data, &signature)
+        .map_err(|e| format!("signature verification failed: {e}"))
 }
 
 #[cfg(test)]

@@ -68,7 +68,12 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
         if line.is_empty() {
             break;
         }
-        if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:").map(str::trim).map(str::to_string) {
+        if let Some(v) = line
+            .to_ascii_lowercase()
+            .strip_prefix("content-length:")
+            .map(str::trim)
+            .map(str::to_string)
+        {
             content_length = v.parse().unwrap_or(0);
         }
     }
@@ -76,7 +81,12 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
 
-    Ok(Request { method, path, content_length, body })
+    Ok(Request {
+        method,
+        path,
+        content_length,
+        body,
+    })
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, reason: &str, headers: &[(&str, &str)], body: &[u8]) -> std::io::Result<()> {
@@ -124,10 +134,7 @@ fn handle(mut stream: TcpStream, data_dir: &Path) -> std::io::Result<()> {
         if let Some(rest) = path.strip_prefix("/v2/") {
             if let Some((repo_and_uploads, query)) = rest.split_once('?') {
                 if repo_and_uploads.contains("/blobs/uploads/") {
-                    let digest = query
-                        .split('&')
-                        .find_map(|kv| kv.strip_prefix("digest="))
-                        .unwrap_or_default();
+                    let digest = query.split('&').find_map(|kv| kv.strip_prefix("digest=")).unwrap_or_default();
                     let actual = format!("sha256:{}", hex_encode(&Sha256::digest(&req.body)));
                     if !digest.is_empty() && digest != actual {
                         let msg = format!("digest mismatch: expected {digest}, got {actual}");
@@ -162,7 +169,13 @@ fn handle(mut stream: TcpStream, data_dir: &Path) -> std::io::Result<()> {
                 return match fs::read(&mpath) {
                     Ok(data) => {
                         let body = if req.method == "HEAD" { &[][..] } else { &data[..] };
-                        write_response(&mut stream, 200, "OK", &[("Content-Type", "application/vnd.oci.image.manifest.v1+json")], body)
+                        write_response(
+                            &mut stream,
+                            200,
+                            "OK",
+                            &[("Content-Type", "application/vnd.oci.image.manifest.v1+json")],
+                            body,
+                        )
                     }
                     Err(_) => write_response(&mut stream, 404, "Not Found", &[], b"manifest not found"),
                 };

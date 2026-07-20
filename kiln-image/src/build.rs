@@ -56,7 +56,9 @@ use crate::kilnfile::{self, Instruction};
 use crate::layer::{self, Entry, EntryKind, LayerManifest};
 use crate::store::{Hash, Store};
 use kilnd_core::namespaces::{spawn_paused, Spawn};
-use kilnd_core::rootfs::{bind_mount_host_devices, bind_mount_host_resolv_conf, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
+use kilnd_core::rootfs::{
+    bind_mount_host_devices, bind_mount_host_resolv_conf, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec,
+};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -226,7 +228,13 @@ fn apply_cache_hit(store: &Store, state: &Hash, layers: &mut Vec<Hash>, config: 
 
 fn save_cache_entry(store: &Store, state: &Hash, layer: Option<Hash>, config: &ImageConfig) -> Result<()> {
     let path = cache_path(store, state);
-    store.write_json(&path, &CacheEntry { layer, config: config.clone() })
+    store.write_json(
+        &path,
+        &CacheEntry {
+            layer,
+            config: config.clone(),
+        },
+    )
 }
 
 /// Hash the content (bytes + mode of every file, not mtimes, not anything
@@ -291,12 +299,20 @@ fn execute_copy(store: &Store, context_dir: &Path, src: &str, dst: &str) -> Resu
                 EntryKind::Dir { opaque: false }
             } else if m.file_type().is_symlink() {
                 let target = fs::read_link(path).map_err(Error::io(path))?;
-                EntryKind::Symlink { target: target.to_string_lossy().replace('\\', "/") }
+                EntryKind::Symlink {
+                    target: target.to_string_lossy().replace('\\', "/"),
+                }
             } else {
                 let blob = store.put_file(path)?;
                 EntryKind::File { blob, size: m.len() }
             };
-            entries.push(Entry { path: entry_path, mode, uid: 0, gid: 0, kind });
+            entries.push(Entry {
+                path: entry_path,
+                mode,
+                uid: 0,
+                gid: 0,
+                kind,
+            });
         }
     } else {
         let mode = meta.permissions().mode() & 0o7777;
@@ -385,7 +401,11 @@ fn execute_run(store: &Store, layers: &[Hash], config: &ImageConfig, command: &s
     };
 
     let env = config.env.clone();
-    let workdir = if config.workdir.is_empty() { "/".to_string() } else { config.workdir.clone() };
+    let workdir = if config.workdir.is_empty() {
+        "/".to_string()
+    } else {
+        config.workdir.clone()
+    };
     let command_owned = command.to_string();
     let merged_for_child = merged.clone();
 
@@ -408,8 +428,7 @@ fn execute_run(store: &Store, layers: &[Hash], config: &ImageConfig, command: &s
     // finishes) - the pid is already unique for exactly as long as this
     // attachment needs to be (this one RUN step), so it doubles as the
     // veth-naming tag `attach_container` needs.
-    kilnd_core::network::attach_container(store.root(), BUILD_NETWORK_NAME, &pid.to_string(), pid.as_raw())
-        .map_err(Error::Runtime)?;
+    kilnd_core::network::attach_container(store.root(), BUILD_NETWORK_NAME, &pid.to_string(), pid.as_raw()).map_err(Error::Runtime)?;
     pending.release().map_err(Error::Runtime)?;
 
     let status = nix::sys::wait::waitpid(pid, None).map_err(|e| Error::Build(format!("waitpid: {e}")))?;
@@ -431,13 +450,7 @@ fn execute_run(store: &Store, layers: &[Hash], config: &ImageConfig, command: &s
 /// pivot into it, and `execve` into `/bin/sh -c <command>`. Never returns
 /// on success (the shell replaces this process); on failure returns the
 /// error for `spawn_isolated`'s wrapper to report and exit(1) with.
-fn run_command_in_container(
-    merged: &Path,
-    overlay: &OverlaySpec,
-    workdir: &str,
-    env: &[(String, String)],
-    command: &str,
-) -> kilnd_core::Result<()> {
+fn run_command_in_container(merged: &Path, overlay: &OverlaySpec, workdir: &str, env: &[(String, String)], command: &str) -> kilnd_core::Result<()> {
     use kilnd_core::Error as RtError;
 
     // See kiln-cli/src/commands/run.rs::run_container_init for why this
@@ -447,10 +460,18 @@ fn run_command_in_container(
     // restrictive) group permission bits instead of "other" on any inode
     // owned by group 0 - e.g. `/root` - causing spurious EACCES.
     nix::unistd::setgroups(&[]).map_err(|e| RtError::InvalidArgument(format!("setgroups: {e}")))?;
-    nix::unistd::setresgid(nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0))
-        .map_err(|e| RtError::InvalidArgument(format!("setresgid: {e}")))?;
-    nix::unistd::setresuid(nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0))
-        .map_err(|e| RtError::InvalidArgument(format!("setresuid: {e}")))?;
+    nix::unistd::setresgid(
+        nix::unistd::Gid::from_raw(0),
+        nix::unistd::Gid::from_raw(0),
+        nix::unistd::Gid::from_raw(0),
+    )
+    .map_err(|e| RtError::InvalidArgument(format!("setresgid: {e}")))?;
+    nix::unistd::setresuid(
+        nix::unistd::Uid::from_raw(0),
+        nix::unistd::Uid::from_raw(0),
+        nix::unistd::Uid::from_raw(0),
+    )
+    .map_err(|e| RtError::InvalidArgument(format!("setresuid: {e}")))?;
 
     make_mounts_private()?;
     mount_overlay(overlay)?;
@@ -467,8 +488,7 @@ fn run_command_in_container(
 
     let shell = std::ffi::CString::new("/bin/sh").unwrap();
     let dash_c = std::ffi::CString::new("-c").unwrap();
-    let cmd_c = std::ffi::CString::new(command)
-        .map_err(|e| RtError::InvalidArgument(format!("command contains a NUL byte: {e}")))?;
+    let cmd_c = std::ffi::CString::new(command).map_err(|e| RtError::InvalidArgument(format!("command contains a NUL byte: {e}")))?;
 
     // See the identical reset in kiln-cli's run_container_init: Rust's
     // runtime ignores SIGPIPE at startup, and that disposition survives
@@ -490,7 +510,6 @@ fn run_command_in_container(
     kilnd_core::security::drop_capabilities(&security)?;
     kilnd_core::security::apply_seccomp(&security)?;
 
-    nix::unistd::execv(&shell, &[shell.clone(), dash_c, cmd_c])
-        .map_err(|e| RtError::InvalidArgument(format!("execv(/bin/sh): {e}")))?;
+    nix::unistd::execv(&shell, &[shell.clone(), dash_c, cmd_c]).map_err(|e| RtError::InvalidArgument(format!("execv(/bin/sh): {e}")))?;
     unreachable!("execv only returns on error, which is handled above")
 }

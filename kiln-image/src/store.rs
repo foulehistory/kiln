@@ -59,9 +59,7 @@ impl Hash {
 
     pub fn from_hex(s: &str) -> Result<Self> {
         let bytes = hex::decode(s).map_err(|_| Error::InvalidHash(s.to_string()))?;
-        let arr: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| Error::InvalidHash(s.to_string()))?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| Error::InvalidHash(s.to_string()))?;
         Ok(Hash(arr))
     }
 }
@@ -219,7 +217,9 @@ impl Store {
     /// tagged or not (an untagged one is either mid-build or a `<none>`
     /// left behind by a tag being reassigned - see `kiln images`/`kiln gc`).
     pub fn all_image_ids(&self) -> Vec<Hash> {
-        let Ok(entries) = fs::read_dir(self.images_dir()) else { return Vec::new() };
+        let Ok(entries) = fs::read_dir(self.images_dir()) else {
+            return Vec::new();
+        };
         entries
             .flatten()
             .filter_map(|entry| {
@@ -256,7 +256,9 @@ impl Store {
     /// referenced by a tagged image" set against to find what it can
     /// safely delete.
     pub fn all_blobs(&self) -> Vec<Hash> {
-        let Ok(shards) = fs::read_dir(self.root.join("blobs")) else { return Vec::new() };
+        let Ok(shards) = fs::read_dir(self.root.join("blobs")) else {
+            return Vec::new();
+        };
         shards
             .flatten()
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -385,12 +387,8 @@ impl Store {
     fn stamp(&self, path: &Path, mode: u32, uid: u32, gid: u32) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(Error::io(path))?;
-        nix::unistd::chown(
-            path,
-            Some(nix::unistd::Uid::from_raw(uid)),
-            Some(nix::unistd::Gid::from_raw(gid)),
-        )
-        .map_err(Error::syscall("chown", path))?;
+        nix::unistd::chown(path, Some(nix::unistd::Uid::from_raw(uid)), Some(nix::unistd::Gid::from_raw(gid)))
+            .map_err(Error::syscall("chown", path))?;
         Ok(())
     }
 
@@ -416,11 +414,7 @@ fn hardlink_or_copy(src: &Path, dest: &Path) -> Result<()> {
 }
 
 fn write_atomically(dest: &Path, data: &[u8]) -> Result<()> {
-    let tmp_path = dest.with_file_name(format!(
-        "{}.tmp-{}",
-        dest.file_name().unwrap().to_string_lossy(),
-        unique_suffix()
-    ));
+    let tmp_path = dest.with_file_name(format!("{}.tmp-{}", dest.file_name().unwrap().to_string_lossy(), unique_suffix()));
     {
         let mut tmp = File::create(&tmp_path).map_err(Error::io(&tmp_path))?;
         tmp.write_all(data).map_err(Error::io(&tmp_path))?;

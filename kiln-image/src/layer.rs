@@ -60,9 +60,16 @@ pub enum EntryKind {
     /// `opaque` mirrors overlayfs's `trusted.overlay.opaque` xattr: this
     /// directory entirely replaces whatever directory of the same path
     /// existed in lower layers, rather than merging with it.
-    Dir { opaque: bool },
-    File { blob: Hash, size: u64 },
-    Symlink { target: String },
+    Dir {
+        opaque: bool,
+    },
+    File {
+        blob: Hash,
+        size: u64,
+    },
+    Symlink {
+        target: String,
+    },
     /// An overlayfs-native whiteout: this path is deleted relative to
     /// whatever lower layers are stacked underneath.
     Whiteout,
@@ -74,7 +81,11 @@ pub enum EntryKind {
     /// erroring out, or worse, silently dropping them) is what makes
     /// glibc-based images - which very commonly ship a handful of static
     /// `/dev` entries from their own build process - actually runnable.
-    Device { char_device: bool, major: u64, minor: u64 },
+    Device {
+        char_device: bool,
+        major: u64,
+        minor: u64,
+    },
     /// A named pipe (FIFO) baked into an image's own layers - same
     /// reasoning as `Device` above (e.g. Debian's sysvinit-derived images
     /// still ship a static `/dev/initctl` FIFO from their own build
@@ -225,13 +236,14 @@ pub fn snapshot_dir(root: &Path, store: &Store, uid_base: u32, gid_base: u32) ->
             EntryKind::Whiteout
         } else if file_type.is_char_device() || file_type.is_block_device() {
             let (major, minor) = split_dev(meta.rdev());
-            EntryKind::Device { char_device: file_type.is_char_device(), major, minor }
+            EntryKind::Device {
+                char_device: file_type.is_char_device(),
+                major,
+                minor,
+            }
         } else if file_type.is_file() {
             let blob = store.put_file(path)?;
-            EntryKind::File {
-                blob,
-                size: meta.len(),
-            }
+            EntryKind::File { blob, size: meta.len() }
         } else {
             return Err(Error::Build(format!(
                 "unsupported file type at {}: {file_type:?} (only regular files, dirs, symlinks, and overlayfs whiteouts are supported)",
@@ -271,8 +283,7 @@ pub fn materialize(manifest: &LayerManifest, store: &Store, dest: &Path, uid_bas
         match &entry.kind {
             EntryKind::Dir { opaque } => {
                 fs::create_dir_all(&target).map_err(Error::io(&target))?;
-                fs::set_permissions(&target, fs::Permissions::from_mode(entry.mode))
-                    .map_err(Error::io(&target))?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(entry.mode)).map_err(Error::io(&target))?;
                 chown(&target, host_uid, host_gid)?;
                 if *opaque {
                     set_opaque_xattr(&target)?;
@@ -319,8 +330,7 @@ pub fn materialize(manifest: &LayerManifest, store: &Store, dest: &Path, uid_bas
                 .map_err(Error::syscall("lchown(symlink)", &target))?;
             }
             EntryKind::Whiteout => {
-                mknod(&target, SFlag::S_IFCHR, Mode::empty(), makedev(0, 0))
-                    .map_err(Error::syscall("mknod(whiteout)", &target))?;
+                mknod(&target, SFlag::S_IFCHR, Mode::empty(), makedev(0, 0)).map_err(Error::syscall("mknod(whiteout)", &target))?;
             }
             EntryKind::Device { char_device, major, minor } => {
                 let sflag = if *char_device { SFlag::S_IFCHR } else { SFlag::S_IFBLK };
@@ -339,8 +349,7 @@ pub fn materialize(manifest: &LayerManifest, store: &Store, dest: &Path, uid_bas
                 chown(&target, host_uid, host_gid)?;
             }
             EntryKind::Fifo => {
-                mknod(&target, SFlag::S_IFIFO, Mode::from_bits_truncate(entry.mode), 0)
-                    .map_err(Error::syscall("mknod(fifo)", &target))?;
+                mknod(&target, SFlag::S_IFIFO, Mode::from_bits_truncate(entry.mode), 0).map_err(Error::syscall("mknod(fifo)", &target))?;
                 fs::set_permissions(&target, fs::Permissions::from_mode(entry.mode)).map_err(Error::io(&target))?;
                 chown(&target, host_uid, host_gid)?;
             }
@@ -369,8 +378,7 @@ pub fn materialize_cached(store: &Store, id: &Hash, uid_base: u32, gid_base: u32
 }
 
 fn chown(path: &Path, uid: u32, gid: u32) -> Result<()> {
-    nix::unistd::chown(path, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid)))
-        .map_err(Error::syscall("chown", path))
+    nix::unistd::chown(path, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid))).map_err(Error::syscall("chown", path))
 }
 
 /// Like `fs::create_dir_all`, but every directory this call actually

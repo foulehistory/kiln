@@ -46,7 +46,10 @@ fn identical_file_content_across_layers_is_stored_once() {
             mode: 0o644,
             uid: 0,
             gid: 0,
-            kind: EntryKind::File { blob: blob_a, size: shared_content.len() as u64 },
+            kind: EntryKind::File {
+                blob: blob_a,
+                size: shared_content.len() as u64,
+            },
         }],
     };
     manifest_a.save(&store).unwrap();
@@ -63,7 +66,10 @@ fn identical_file_content_across_layers_is_stored_once() {
             mode: 0o600,
             uid: 1000,
             gid: 1000,
-            kind: EntryKind::File { blob: blob_b, size: shared_content.len() as u64 },
+            kind: EntryKind::File {
+                blob: blob_b,
+                size: shared_content.len() as u64,
+            },
         }],
     };
     manifest_b.save(&store).unwrap();

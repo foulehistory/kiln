@@ -102,7 +102,12 @@ pub fn scan(store: &Store, image_id: &Hash) -> Result<ScanReport> {
         std::fs::create_dir_all(d).map_err(Error::io(d))?;
     }
 
-    let overlay = OverlaySpec { lower_dirs, upper_dir: upper, work_dir: work, merged_dir: merged.clone() };
+    let overlay = OverlaySpec {
+        lower_dirs,
+        upper_dir: upper,
+        work_dir: work,
+        merged_dir: merged.clone(),
+    };
     mount_overlay(&overlay)?;
     let result = run_trivy(&merged);
     // Best-effort: a failed unmount here would otherwise mask whatever
@@ -129,11 +134,14 @@ fn run_trivy(target: &Path) -> Result<ScanReport> {
         })?;
 
     if !output.status.success() {
-        return Err(Error::Scan(format!("trivy exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr))));
+        return Err(Error::Scan(format!(
+            "trivy exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
     }
 
-    let parsed: TrivyOutput =
-        serde_json::from_slice(&output.stdout).map_err(|e| Error::Scan(format!("parsing trivy output: {e}")))?;
+    let parsed: TrivyOutput = serde_json::from_slice(&output.stdout).map_err(|e| Error::Scan(format!("parsing trivy output: {e}")))?;
 
     let mut report = ScanReport::default();
     for result in parsed.results {

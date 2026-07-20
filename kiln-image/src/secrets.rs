@@ -75,8 +75,9 @@ pub fn create(store_root: &Path, name: &str, value: &[u8]) -> io::Result<()> {
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext =
-        cipher.encrypt(nonce, value).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("encrypting secret: {e}")))?;
+    let ciphertext = cipher
+        .encrypt(nonce, value)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("encrypting secret: {e}")))?;
 
     let mut out = nonce_bytes.to_vec();
     out.extend_from_slice(&ciphertext);
@@ -97,7 +98,10 @@ pub fn read(store_root: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
     let Some(path) = secret_path(store_root, name) else { return Ok(None) };
     let Ok(data) = std::fs::read(&path) else { return Ok(None) };
     if data.len() < 12 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("secret {name} is corrupt (too short)")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("secret {name} is corrupt (too short)"),
+        ));
     }
     let (nonce_bytes, ciphertext) = data.split_at(12);
 
@@ -118,7 +122,9 @@ pub fn remove(store_root: &Path, name: &str) -> io::Result<()> {
 /// Names only - never a value, by construction (this just reads
 /// directory entries, never touches ciphertext content).
 pub fn list(store_root: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(secrets_dir(store_root)) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(secrets_dir(store_root)) else {
+        return Vec::new();
+    };
     entries
         .flatten()
         .filter_map(|e| e.file_name().to_str().and_then(|s| s.strip_suffix(".enc")).map(str::to_string))
@@ -144,7 +150,10 @@ mod tests {
         create(store_dir.path(), "test-secret", b"hunter2").unwrap();
 
         let raw = std::fs::read(store_dir.path().join("secrets").join("test-secret.enc")).unwrap();
-        assert!(!raw.windows(b"hunter2".len()).any(|w| w == b"hunter2"), "ciphertext must not contain the plaintext");
+        assert!(
+            !raw.windows(b"hunter2".len()).any(|w| w == b"hunter2"),
+            "ciphertext must not contain the plaintext"
+        );
 
         let plaintext = read(store_dir.path(), "test-secret").unwrap().unwrap();
         assert_eq!(plaintext, b"hunter2");

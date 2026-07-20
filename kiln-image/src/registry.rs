@@ -96,9 +96,17 @@ impl Reference {
                 // looking up a tag, on the assumption (stated in
                 // `normalize_repository`'s own doc comment) that pull
                 // already saved it under that same normalized name.
-                Reference { host: Some(first.to_string()), repository: crate::image::normalize_repository(rest), tag }
+                Reference {
+                    host: Some(first.to_string()),
+                    repository: crate::image::normalize_repository(rest),
+                    tag,
+                }
             }
-            _ => Reference { host: None, repository: crate::image::normalize_repository(&repo), tag },
+            _ => Reference {
+                host: None,
+                repository: crate::image::normalize_repository(&repo),
+                tag,
+            },
         }
     }
 
@@ -153,8 +161,7 @@ fn get_token(reference: &Reference) -> Result<Option<String>> {
             let resp = ureq::get(&url)
                 .call()
                 .map_err(|e| Error::Registry(format!("requesting pull token for {repository}: {e}")))?;
-            let parsed: TokenResponse =
-                resp.into_json().map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
+            let parsed: TokenResponse = resp.into_json().map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
             Ok(Some(parsed.token))
         }
     }
@@ -177,7 +184,9 @@ fn get_explicit_host_token(base_url: &str, repository: &str, scope_action: &str)
         Err(_) => None,
     };
     let Some(challenge) = challenge else { return Ok(None) };
-    let Some((realm, service)) = parse_bearer_challenge(&challenge) else { return Ok(None) };
+    let Some((realm, service)) = parse_bearer_challenge(&challenge) else {
+        return Ok(None);
+    };
 
     let scope = format!("repository:{repository}:{scope_action}");
     let separator = if realm.contains('?') { "&" } else { "?" };
@@ -232,7 +241,11 @@ fn base64_encode(input: &str) -> String {
         let b2 = *chunk.get(2).unwrap_or(&0);
         out.push(CHARS[(b0 >> 2) as usize] as char);
         out.push(CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            CHARS[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+        } else {
+            '='
+        });
         out.push(if chunk.len() > 2 { CHARS[(b2 & 0x3f) as usize] as char } else { '=' });
     }
     out
@@ -295,13 +308,10 @@ fn fetch_manifest(base_url: &str, repository: &str, reference: &str, token: Opti
         .map_err(|e| Error::Registry(format!("fetching manifest {repository}:{reference}: {e}")))?;
 
     let content_type = resp.content_type().to_string();
-    let body = resp
-        .into_string()
-        .map_err(|e| Error::Registry(format!("reading manifest body: {e}")))?;
+    let body = resp.into_string().map_err(|e| Error::Registry(format!("reading manifest body: {e}")))?;
 
     if content_type.contains("manifest.list") || content_type.contains("image.index") {
-        let list: ManifestList =
-            serde_json::from_str(&body).map_err(|e| Error::Registry(format!("parsing manifest list: {e}")))?;
+        let list: ManifestList = serde_json::from_str(&body).map_err(|e| Error::Registry(format!("parsing manifest list: {e}")))?;
         let entry = list
             .manifests
             .iter()
@@ -342,9 +352,9 @@ fn fetch_blob_reader(base_url: &str, repository: &str, digest: &str, token: Opti
 }
 
 fn verify_digest(digest: &str, hasher: Sha256) -> Result<()> {
-    let expected = digest.strip_prefix("sha256:").ok_or_else(|| {
-        Error::Registry(format!("unsupported digest algorithm in {digest:?} (only sha256 is supported)"))
-    })?;
+    let expected = digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| Error::Registry(format!("unsupported digest algorithm in {digest:?} (only sha256 is supported)")))?;
     let actual = hex::encode(hasher.finalize());
     if actual != expected {
         return Err(Error::Registry(format!(
@@ -406,7 +416,11 @@ fn pull_layer(store: &Store, base_url: &str, repository: &str, digest: &str, tok
             if base == ".wh..wh..opq" {
                 pending_opaque.push(dir);
             } else {
-                let deleted_path = if dir.is_empty() { stripped.to_string() } else { format!("{dir}/{stripped}") };
+                let deleted_path = if dir.is_empty() {
+                    stripped.to_string()
+                } else {
+                    format!("{dir}/{stripped}")
+                };
                 entries.push(Entry {
                     path: deleted_path,
                     mode: 0,
@@ -481,18 +495,36 @@ fn pull_layer(store: &Store, base_url: &str, repository: &str, digest: &str, tok
                 // layer.rs's EntryKind::Device docs for why these must be
                 // preserved rather than skipped: Kiln containers get no
                 // /dev of their own beyond whatever the image provides.
-                let major = entry.header().device_major().map_err(|e| Error::Registry(format!("layer {digest}: reading device major for {raw_path:?}: {e}")))?.unwrap_or(0);
-                let minor = entry.header().device_minor().map_err(|e| Error::Registry(format!("layer {digest}: reading device minor for {raw_path:?}: {e}")))?.unwrap_or(0);
+                let major = entry
+                    .header()
+                    .device_major()
+                    .map_err(|e| Error::Registry(format!("layer {digest}: reading device major for {raw_path:?}: {e}")))?
+                    .unwrap_or(0);
+                let minor = entry
+                    .header()
+                    .device_minor()
+                    .map_err(|e| Error::Registry(format!("layer {digest}: reading device minor for {raw_path:?}: {e}")))?
+                    .unwrap_or(0);
                 entries.push(Entry {
                     path: raw_path,
                     mode,
                     uid,
                     gid,
-                    kind: EntryKind::Device { char_device: entry_type == tar::EntryType::Char, major: major as u64, minor: minor as u64 },
+                    kind: EntryKind::Device {
+                        char_device: entry_type == tar::EntryType::Char,
+                        major: major as u64,
+                        minor: minor as u64,
+                    },
                 });
             }
             tar::EntryType::Fifo => {
-                entries.push(Entry { path: raw_path, mode, uid, gid, kind: EntryKind::Fifo });
+                entries.push(Entry {
+                    path: raw_path,
+                    mode,
+                    uid,
+                    gid,
+                    kind: EntryKind::Fifo,
+                });
             }
             tar::EntryType::XGlobalHeader | tar::EntryType::XHeader => {
                 // Pax extension headers carry no filesystem entry of
@@ -604,17 +636,25 @@ struct PubkeyResponse {
 /// a silent "treat as unsigned".
 fn verify_signature(base_url: &str, repository: &str, tag: &str, manifest_bytes: &[u8], token: Option<&str>) -> Result<()> {
     let sig_url = format!("{base_url}/v2/{repository}/manifests/{tag}/signature");
-    let sig_resp = with_auth(ureq::get(&sig_url), token)
-        .call()
-        .map_err(|e| Error::Registry(format!("{repository}:{tag} has no valid signature ({e}) - re-run with --insecure-skip-verify to pull anyway")))?;
-    let sig_file: SignatureFile = sig_resp.into_json().map_err(|e| Error::Registry(format!("parsing signature response: {e}")))?;
+    let sig_resp = with_auth(ureq::get(&sig_url), token).call().map_err(|e| {
+        Error::Registry(format!(
+            "{repository}:{tag} has no valid signature ({e}) - re-run with --insecure-skip-verify to pull anyway"
+        ))
+    })?;
+    let sig_file: SignatureFile = sig_resp
+        .into_json()
+        .map_err(|e| Error::Registry(format!("parsing signature response: {e}")))?;
 
     let owner = repository.split('/').next().unwrap_or(repository);
     let pubkey_url = format!("{base_url}/users/{owner}/pubkey");
-    let pubkey_resp = with_auth(ureq::get(&pubkey_url), token)
-        .call()
-        .map_err(|e| Error::Registry(format!("could not fetch {owner}'s public key ({e}) - re-run with --insecure-skip-verify to pull anyway")))?;
-    let pubkey: PubkeyResponse = pubkey_resp.into_json().map_err(|e| Error::Registry(format!("parsing public key response: {e}")))?;
+    let pubkey_resp = with_auth(ureq::get(&pubkey_url), token).call().map_err(|e| {
+        Error::Registry(format!(
+            "could not fetch {owner}'s public key ({e}) - re-run with --insecure-skip-verify to pull anyway"
+        ))
+    })?;
+    let pubkey: PubkeyResponse = pubkey_resp
+        .into_json()
+        .map_err(|e| Error::Registry(format!("parsing public key response: {e}")))?;
 
     crate::signing::verify(&pubkey.public_key, manifest_bytes, &sig_file.signature)
         .map_err(|e| Error::Registry(format!("signature verification failed for {repository}:{tag}: {e}")))
@@ -657,9 +697,7 @@ fn get_push_token(reference: &Reference) -> Result<Option<String>> {
             let resp = ureq::get(&url)
                 .call()
                 .map_err(|e| Error::Registry(format!("requesting push token for {repository}: {e}")))?;
-            let parsed: TokenResponse = resp
-                .into_json()
-                .map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
+            let parsed: TokenResponse = resp.into_json().map_err(|e| Error::Registry(format!("parsing token response: {e}")))?;
             Ok(Some(parsed.token))
         }
     }
@@ -685,7 +723,11 @@ fn push_blob(base_url: &str, repository: &str, digest: &str, data: &[u8], token:
     // A relative Location (just-path, e.g. "/v2/repo/blobs/uploads/<id>")
     // is legal per the Distribution spec; an absolute one is far more
     // common in practice, but handle both.
-    let upload_url = if upload_url.starts_with('/') { format!("{base_url}{upload_url}") } else { upload_url };
+    let upload_url = if upload_url.starts_with('/') {
+        format!("{base_url}{upload_url}")
+    } else {
+        upload_url
+    };
     let separator = if upload_url.contains('?') { "&" } else { "?" };
     let put_url = format!("{upload_url}{separator}digest={digest}");
 
@@ -749,7 +791,14 @@ pub fn push(store: &Store, image_id: &Hash, reference: &str) -> Result<()> {
     // strictness, by default requiring what this step produces).
     if reference.host.is_some() {
         if let Some(signing_key) = crate::signing::load_signing_key() {
-            sign_and_publish(&base_url, &reference.repository, &reference.tag, &manifest_json, &signing_key, token.as_deref())?;
+            sign_and_publish(
+                &base_url,
+                &reference.repository,
+                &reference.tag,
+                &manifest_json,
+                &signing_key,
+                token.as_deref(),
+            )?;
         }
     }
 
@@ -773,11 +822,21 @@ struct PubkeyPayload {
 /// idempotent and self-healing - `kiln-registry`'s `PUT
 /// /users/:username/pubkey` just overwrites, so there's no "did I already
 /// publish it" state to track client-side.
-fn sign_and_publish(base_url: &str, repository: &str, tag: &str, manifest_json: &[u8], signing_key: &ed25519_dalek::SigningKey, token: Option<&str>) -> Result<()> {
+fn sign_and_publish(
+    base_url: &str,
+    repository: &str,
+    tag: &str,
+    manifest_json: &[u8],
+    signing_key: &ed25519_dalek::SigningKey,
+    token: Option<&str>,
+) -> Result<()> {
     let signature = crate::signing::sign(signing_key, manifest_json);
     let sig_url = format!("{base_url}/v2/{repository}/manifests/{tag}/signature");
-    let sig_body = serde_json::to_vec(&SignaturePayload { algorithm: "ed25519", signature })
-        .map_err(|e| Error::Registry(e.to_string()))?;
+    let sig_body = serde_json::to_vec(&SignaturePayload {
+        algorithm: "ed25519",
+        signature,
+    })
+    .map_err(|e| Error::Registry(e.to_string()))?;
     with_auth(ureq::put(&sig_url), token)
         .set("Content-Type", "application/json")
         .send_bytes(&sig_body)
@@ -792,13 +851,13 @@ fn sign_and_publish(base_url: &str, repository: &str, tag: &str, manifest_json: 
     let owner = repository.split('/').next().unwrap_or(repository);
     let public_key = hex::encode(signing_key.verifying_key().to_bytes());
     let pubkey_url = format!("{base_url}/users/{owner}/pubkey");
-    let pubkey_body =
-        serde_json::to_vec(&PubkeyPayload { public_key }).map_err(|e| Error::Registry(e.to_string()))?;
+    let pubkey_body = serde_json::to_vec(&PubkeyPayload { public_key }).map_err(|e| Error::Registry(e.to_string()))?;
     let mut req = ureq::put(&pubkey_url).set("Content-Type", "application/json");
     if let Some((user, pass)) = explicit_host_credentials() {
         req = req.set("Authorization", &format!("Basic {}", base64_encode(&format!("{user}:{pass}"))));
     }
-    req.send_bytes(&pubkey_body).map_err(|e| Error::Registry(format!("publishing public key: {e}")))?;
+    req.send_bytes(&pubkey_body)
+        .map_err(|e| Error::Registry(format!("publishing public key: {e}")))?;
 
     Ok(())
 }
@@ -904,7 +963,11 @@ fn pack_layer_tar_gz(store: &Store, manifest: &LayerManifest) -> Result<Vec<u8>>
             }
             EntryKind::Whiteout => {
                 let (dir, base) = split_path(&entry.path);
-                let wh_path = if dir.is_empty() { format!(".wh.{base}") } else { format!("{dir}/.wh.{base}") };
+                let wh_path = if dir.is_empty() {
+                    format!(".wh.{base}")
+                } else {
+                    format!("{dir}/.wh.{base}")
+                };
                 header.set_entry_type(tar::EntryType::Regular);
                 header.set_size(0);
                 header.set_cksum();
@@ -914,8 +977,12 @@ fn pack_layer_tar_gz(store: &Store, manifest: &LayerManifest) -> Result<Vec<u8>>
             }
             EntryKind::Device { char_device, major, minor } => {
                 header.set_entry_type(if *char_device { tar::EntryType::Char } else { tar::EntryType::Block });
-                header.set_device_major(*major as u32).map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
-                header.set_device_minor(*minor as u32).map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
+                header
+                    .set_device_major(*major as u32)
+                    .map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
+                header
+                    .set_device_minor(*minor as u32)
+                    .map_err(|e| Error::Registry(format!("packing device {}: {e}", entry.path)))?;
                 header.set_size(0);
                 header.set_cksum();
                 builder
@@ -951,8 +1018,6 @@ fn pack_layer_tar_gz(store: &Store, manifest: &LayerManifest) -> Result<Vec<u8>>
         }
     }
 
-    let gz = builder
-        .into_inner()
-        .map_err(|e| Error::Registry(format!("finishing tar: {e}")))?;
+    let gz = builder.into_inner().map_err(|e| Error::Registry(format!("finishing tar: {e}")))?;
     gz.finish().map_err(|e| Error::Registry(format!("finishing gzip: {e}")))
 }

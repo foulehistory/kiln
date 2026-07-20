@@ -73,10 +73,7 @@ pub fn parse(source: &str) -> Result<Vec<Instruction>> {
 }
 
 fn parse_instruction(line: &str, line_no: usize) -> Result<Instruction> {
-    let (verb, rest) = line
-        .split_once(char::is_whitespace)
-        .map(|(v, r)| (v, r.trim()))
-        .unwrap_or((line, ""));
+    let (verb, rest) = line.split_once(char::is_whitespace).map(|(v, r)| (v, r.trim())).unwrap_or((line, ""));
 
     let err = |message: String| Error::KilnfileParse { line: line_no, message };
 
@@ -98,17 +95,24 @@ fn parse_instruction(line: &str, line_no: usize) -> Result<Instruction> {
             let src = parts.next().ok_or_else(|| err("COPY requires <src> <dst>".into()))?;
             let dst = parts.next().ok_or_else(|| err("COPY requires <src> <dst>".into()))?;
             if parts.next().is_some() {
-                return Err(err(
-                    "COPY takes exactly two arguments (multi-source COPY is not supported)".into(),
-                ));
+                return Err(err("COPY takes exactly two arguments (multi-source COPY is not supported)".into()));
             }
-            Ok(Instruction::Copy { src: src.to_string(), dst: dst.to_string() })
+            Ok(Instruction::Copy {
+                src: src.to_string(),
+                dst: dst.to_string(),
+            })
         }
         "ENV" => {
             if let Some((k, v)) = rest.split_once('=') {
-                Ok(Instruction::Env { key: k.trim().to_string(), value: v.trim().to_string() })
+                Ok(Instruction::Env {
+                    key: k.trim().to_string(),
+                    value: v.trim().to_string(),
+                })
             } else if let Some((k, v)) = rest.split_once(char::is_whitespace) {
-                Ok(Instruction::Env { key: k.trim().to_string(), value: v.trim().to_string() })
+                Ok(Instruction::Env {
+                    key: k.trim().to_string(),
+                    value: v.trim().to_string(),
+                })
             } else {
                 Err(err("ENV requires key=value or key value".into()))
             }
@@ -124,10 +128,7 @@ fn parse_instruction(line: &str, line_no: usize) -> Result<Instruction> {
                 Some((p, proto)) => (p, proto.to_string()),
                 None => (rest, "tcp".to_string()),
             };
-            let port: u16 = port_str
-                .trim()
-                .parse()
-                .map_err(|_| err(format!("invalid port {port_str:?}")))?;
+            let port: u16 = port_str.trim().parse().map_err(|_| err(format!("invalid port {port_str:?}")))?;
             Ok(Instruction::Expose { port, proto })
         }
         "WORKDIR" => {
