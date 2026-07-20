@@ -90,7 +90,10 @@ fn ping(req: &Request) -> Response {
     let scheme = req.headers.get("x-forwarded-proto").map(String::as_str).unwrap_or("http");
     Response {
         status: 401,
-        headers: vec![("WWW-Authenticate".into(), format!("Bearer realm=\"{scheme}://{host}/token\",service=\"{host}\""))],
+        headers: vec![(
+            "WWW-Authenticate".into(),
+            format!("Bearer realm=\"{scheme}://{host}/token\",service=\"{host}\""),
+        )],
         body: Vec::new(),
     }
 }
@@ -190,7 +193,11 @@ fn bearer_token(req: &Request) -> Option<&str> {
 
 fn head_blob(store: &RegistryStore, digest: &str) -> Response {
     if store.blob_exists(digest) {
-        Response { status: 200, headers: Vec::new(), body: Vec::new() }
+        Response {
+            status: 200,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     } else {
         Response::text(404, "blob not found")
     }
@@ -198,7 +205,11 @@ fn head_blob(store: &RegistryStore, digest: &str) -> Response {
 
 fn get_blob(store: &RegistryStore, digest: &str) -> Response {
     match store.blob_path(digest).and_then(|p| crate::store::read_file(&p)) {
-        Some(bytes) => Response { status: 200, headers: vec![("Content-Type".into(), "application/octet-stream".into())], body: bytes },
+        Some(bytes) => Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "application/octet-stream".into())],
+            body: bytes,
+        },
         None => Response::text(404, "blob not found"),
     }
 }
@@ -233,7 +244,11 @@ fn complete_upload(store: &RegistryStore, tokens: &TokenStore, req: &Request, re
         return Response::text(400, format!("digest mismatch: expected {digest}, got {actual}"));
     }
     match store.write_blob(digest, &req.body) {
-        Some(Ok(())) => Response { status: 201, headers: Vec::new(), body: Vec::new() },
+        Some(Ok(())) => Response {
+            status: 201,
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
         Some(Err(e)) => Response::text(500, format!("writing blob: {e}")),
         None => Response::text(400, "invalid digest"),
     }
@@ -244,7 +259,11 @@ fn put_manifest(store: &RegistryStore, tokens: &TokenStore, req: &Request, repos
         return Response::text(401, "push token required");
     }
     match store.write_manifest(repository, tag, &req.body) {
-        Some(Ok(())) => Response { status: 201, headers: Vec::new(), body: Vec::new() },
+        Some(Ok(())) => Response {
+            status: 201,
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
         Some(Err(e)) => Response::text(500, format!("writing manifest: {e}")),
         None => Response::text(400, "invalid tag"),
     }
@@ -268,7 +287,11 @@ fn put_signature(store: &RegistryStore, tokens: &TokenStore, req: &Request, repo
         return Response::text(401, "push token required");
     }
     match store.write_signature(repository, tag, &req.body) {
-        Some(Ok(())) => Response { status: 201, headers: Vec::new(), body: Vec::new() },
+        Some(Ok(())) => Response {
+            status: 201,
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
         Some(Err(e)) => Response::text(500, format!("writing signature: {e}")),
         None => Response::text(400, "invalid tag"),
     }
@@ -278,7 +301,11 @@ fn put_signature(store: &RegistryStore, tokens: &TokenStore, req: &Request, repo
 /// a signature to verify it, without first needing a token.
 fn get_signature(store: &RegistryStore, repository: &str, tag: &str) -> Response {
     match store.signature_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
-        Some(bytes) => Response { status: 200, headers: vec![("Content-Type".into(), "application/json".into())], body: bytes },
+        Some(bytes) => Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: bytes,
+        },
         None => Response::text(404, "no signature for this manifest"),
     }
 }
@@ -288,7 +315,11 @@ fn put_scan_report(store: &RegistryStore, tokens: &TokenStore, req: &Request, re
         return Response::text(401, "push token required");
     }
     match store.write_scan_report(repository, tag, &req.body) {
-        Some(Ok(())) => Response { status: 201, headers: Vec::new(), body: Vec::new() },
+        Some(Ok(())) => Response {
+            status: 201,
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
         Some(Err(e)) => Response::text(500, format!("writing scan report: {e}")),
         None => Response::text(400, "invalid tag"),
     }
@@ -296,7 +327,11 @@ fn put_scan_report(store: &RegistryStore, tokens: &TokenStore, req: &Request, re
 
 fn get_scan_report(store: &RegistryStore, repository: &str, tag: &str) -> Response {
     match store.scan_report_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
-        Some(bytes) => Response { status: 200, headers: vec![("Content-Type".into(), "application/json".into())], body: bytes },
+        Some(bytes) => Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: bytes,
+        },
         None => Response::text(404, "no scan report for this manifest"),
     }
 }

@@ -42,7 +42,10 @@ impl RegistryStore {
     }
 
     pub fn load_users(&self) -> Vec<User> {
-        std::fs::read(self.users_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(self.users_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     pub fn save_users(&self, users: &[User]) -> io::Result<()> {

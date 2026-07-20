@@ -38,7 +38,10 @@ pub fn run(store: RegistryStore, port: u16) -> io::Result<()> {
         std::thread::spawn(move || {
             let mut conn = Conn::Tcp(stream);
             if let Err(e) = handle_connection(&store, &tokens, &mut conn) {
-                if !matches!(e.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                ) {
                     eprintln!("kiln-registry: connection error: {e}");
                 }
             }

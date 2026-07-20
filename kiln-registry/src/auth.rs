@@ -17,7 +17,10 @@ use std::time::{Duration, SystemTime};
 
 pub fn hash_password(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
-    Argon2::default().hash_password(password.as_bytes(), &salt).expect("hashing a password cannot fail").to_string()
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("hashing a password cannot fail")
+        .to_string()
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
@@ -51,12 +54,18 @@ impl Default for TokenStore {
 
 impl TokenStore {
     pub fn new() -> Self {
-        TokenStore { tokens: Mutex::new(HashMap::new()) }
+        TokenStore {
+            tokens: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn issue(&self, repository: String, actions: Vec<String>) -> String {
         let token = random_token();
-        let claims = Claims { repository, actions, expires_at: SystemTime::now() + TOKEN_TTL };
+        let claims = Claims {
+            repository,
+            actions,
+            expires_at: SystemTime::now() + TOKEN_TTL,
+        };
         self.tokens.lock().expect("token store mutex poisoned").insert(token.clone(), claims);
         token
     }
@@ -66,9 +75,7 @@ impl TokenStore {
     pub fn validate(&self, token: &str, repository: &str, action: &str) -> bool {
         let tokens = self.tokens.lock().expect("token store mutex poisoned");
         match tokens.get(token) {
-            Some(claims) => {
-                claims.repository == repository && claims.actions.iter().any(|a| a == action) && claims.expires_at > SystemTime::now()
-            }
+            Some(claims) => claims.repository == repository && claims.actions.iter().any(|a| a == action) && claims.expires_at > SystemTime::now(),
             None => false,
         }
     }
