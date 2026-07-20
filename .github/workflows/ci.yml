@@ -17,3 +17,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run workspace test suite
         run: cargo test --workspace
+
+  fmt-and-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting (rustfmt.toml pins max_width=150)
+        run: cargo fmt --all -- --check
+      - name: Clippy (default lints, denied)
+        run: cargo clippy --workspace --all-targets -- -D warnings
