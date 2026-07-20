@@ -61,6 +61,7 @@ fn stop_falls_back_to_sigkill_when_sigterm_is_ignored() {
         cpu_limit: None,
         ports: Vec::new(),
         restart_policy: kiln_cli::container::RestartPolicy::No,
+        secrets: Vec::new(),
     };
     container.save(&store).expect("save container state");
 

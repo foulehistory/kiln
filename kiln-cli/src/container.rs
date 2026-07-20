@@ -99,6 +99,12 @@ pub struct Container {
     pub ports: Vec<String>,
     #[serde(default)]
     pub restart_policy: RestartPolicy,
+    /// Names of secrets (`--secret <name>`) mounted at `/run/secrets/` -
+    /// same restart-fidelity role as `volumes`/`env`, but names only,
+    /// never a value: unlike `env`, this field is safe to persist and
+    /// show (e.g. in `kiln inspect`) as-is.
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 impl Container {

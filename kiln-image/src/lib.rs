@@ -8,6 +8,7 @@ pub mod image;
 pub mod kilnfile;
 pub mod layer;
 pub mod registry;
+pub mod secrets;
 pub mod signing;
 pub mod store;
 

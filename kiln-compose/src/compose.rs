@@ -12,6 +12,14 @@ pub struct ComposeFile {
     pub services: BTreeMap<String, Service>,
     #[serde(default)]
     pub volumes: BTreeMap<String, serde_yaml::Value>,
+    /// Declares secret *names* only - same role as `volumes` above: the
+    /// real value never lives in `kiln.yaml`, only created out-of-band
+    /// via `kiln secret create`. Parsed so a `secrets:` section doesn't
+    /// fail to parse; `cmd_up` doesn't need to iterate this directly
+    /// (each service's own `secrets:` list is what actually gets mounted).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub secrets: BTreeMap<String, serde_yaml::Value>,
     /// Parsed but not yet acted on: v1 always attaches every service to
     /// one implicit `<project>_default` network (see `main.rs::cmd_up`)
     /// rather than supporting custom network topologies. Kept as a field
@@ -38,6 +46,11 @@ pub struct Service {
     /// -p` - see `kiln_cli::commands::network::PortSpec`.
     #[serde(default)]
     pub ports: Vec<String>,
+    /// Names of secrets (declared in the top-level `secrets:` map,
+    /// created with `kiln secret create`) to mount at `/run/secrets/` -
+    /// same syntax/role as `kiln run --secret`.
+    #[serde(default)]
+    pub secrets: Vec<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
 }

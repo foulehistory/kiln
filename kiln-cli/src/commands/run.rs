@@ -57,6 +57,12 @@ pub struct Args {
     #[arg(short = 'e', long = "env")]
     pub env: Vec<String>,
 
+    /// Mount a secret (created with `kiln secret create`) into the
+    /// container at `/run/secrets/<name>` (repeatable) - unlike -e, never
+    /// visible in `kiln inspect` or the container's own persisted state.
+    #[arg(long = "secret")]
+    pub secrets: Vec<String>,
+
     /// Memory limit, e.g. `512m`, `1g`, or a plain byte count (unlimited by default)
     #[arg(long)]
     pub memory: Option<String>,
@@ -119,6 +125,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         cpu_limit: args.cpus,
         ports: args.ports,
         restart_policy,
+        secrets: args.secrets,
     };
 
     let container = start(store, spec, None)?;
@@ -155,6 +162,10 @@ pub struct RunSpec {
     /// otherwise); `start` rejects the combination of ports with no network.
     pub ports: Vec<String>,
     pub restart_policy: crate::container::RestartPolicy,
+    /// Names of secrets (created with `kiln secret create`) to decrypt
+    /// and mount at `/run/secrets/<name>` - see `kiln_image::secrets` and
+    /// `kilnd_core::rootfs::mount_tmpfs_secrets`.
+    pub secrets: Vec<String>,
 }
 
 impl RunSpec {
@@ -171,6 +182,7 @@ impl RunSpec {
             cpu_limit: None,
             ports: Vec::new(),
             restart_policy: crate::container::RestartPolicy::No,
+            secrets: Vec::new(),
         }
     }
 }
@@ -227,6 +239,19 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         // wrote keep whatever ownership they already have.
         super::chown(&host_path, uid_base, gid_base)?;
         volume_mounts.push((host_path, container_path.to_string()));
+    }
+
+    // Decrypted here, in this host-side (real root) process, before the
+    // container even exists - never as an env var, never written to the
+    // container's writable layer or `Container`'s own persisted JSON.
+    // `child_fn` below captures the plaintext directly; the container
+    // never sees anything but the secret's *name*.
+    let mut secret_files = Vec::new();
+    for secret_name in &spec.secrets {
+        let value = kiln_image::secrets::read(store.root(), secret_name)
+            .map_err(|e| CliError::msg(format!("reading secret {secret_name:?}: {e}")))?
+            .ok_or_else(|| CliError::msg(format!("no such secret: {secret_name:?} (create it with `kiln secret create`)")))?;
+        secret_files.push((secret_name.clone(), value));
     }
 
     let mut lower_dirs = Vec::new();
@@ -306,8 +331,9 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
     let workdir = if image.config.workdir.is_empty() { "/".to_string() } else { image.config.workdir.clone() };
     let command_for_state = command.clone();
 
-    let child_fn =
-        move || -> kilnd_core::Result<()> { run_container_init(&merged, &overlay, &workdir, &env, &command, log_fd, &volume_mounts) };
+    let child_fn = move || -> kilnd_core::Result<()> {
+        run_container_init(&merged, &overlay, &workdir, &env, &command, log_fd, &volume_mounts, &secret_files)
+    };
 
     let container = Container {
         id: id.clone(),
@@ -326,6 +352,7 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         cpu_limit: spec.cpu_limit,
         ports: spec.ports,
         restart_policy: spec.restart_policy,
+        secrets: spec.secrets,
     };
 
     // Created (unrestricted unless --memory/--cpus were given) before the
@@ -396,6 +423,7 @@ pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
         cpu_limit: container.cpu_limit,
         ports: container.ports.clone(),
         restart_policy: container.restart_policy,
+        secrets: container.secrets.clone(),
     };
     start(store, spec, Some(container.id.clone()))
 }
@@ -444,6 +472,7 @@ fn run_container_init(
     command: &[String],
     log_fd: RawFd,
     volume_mounts: &[(std::path::PathBuf, String)],
+    secret_files: &[(String, Vec<u8>)],
 ) -> kilnd_core::Result<()> {
     use kilnd_core::Error as RtError;
 
@@ -475,6 +504,7 @@ fn run_container_init(
     }
     bind_mount_host_devices(merged)?;
     bind_mount_host_resolv_conf(merged)?;
+    kilnd_core::rootfs::mount_tmpfs_secrets(merged, secret_files)?;
 
     pivot_root_into(merged)?;
     mount_proc(Path::new("/proc"))?;

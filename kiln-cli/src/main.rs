@@ -63,6 +63,9 @@ enum Command {
     /// Manage the local image-signing identity
     #[command(subcommand)]
     Key(commands::key::Command),
+    /// Manage encrypted-at-rest secrets
+    #[command(subcommand)]
+    Secret(commands::secret::Command),
 }
 
 fn main() {
@@ -97,6 +100,7 @@ fn main() {
         Command::Volume(cmd) => commands::volume::run(&store, cmd),
         Command::Network(cmd) => commands::network::run(&store, cmd),
         Command::Key(cmd) => commands::key::run(cmd),
+        Command::Secret(cmd) => commands::secret::run(&store, cmd),
     };
 
     if let Err(e) = result {

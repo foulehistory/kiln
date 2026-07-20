@@ -13,6 +13,7 @@ pub mod push;
 pub mod rm;
 pub mod rmi;
 pub mod run;
+pub mod secret;
 pub mod start;
 pub mod stop;
 pub mod top;

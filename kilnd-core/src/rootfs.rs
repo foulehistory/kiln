@@ -18,6 +18,7 @@ use crate::error::{self, Result};
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::unistd::chdir;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Paths making up one overlayfs mount.
@@ -289,4 +290,43 @@ pub fn bind_mount_host_resolv_conf(merged_dir: &Path) -> Result<()> {
     let _ = fs::remove_file(&target);
     fs::File::create(&target).map_err(error::io(&target))?;
     mount(Some(host_path), &target, None::<&str>, MsFlags::MS_BIND, None::<&str>).map_err(error::syscall("mount(bind resolv.conf)"))
+}
+
+/// Mounts a small tmpfs at `merged_dir/run/secrets` and writes each
+/// `(name, plaintext)` pair as its own file - unlike [`bind_mount`],
+/// there is no host-side directory backing this at all: tmpfs is
+/// RAM-only, so a secret's plaintext never touches host disk (including
+/// the container's own overlay `upperdir`) and vanishes the moment the
+/// container's mount namespace goes away.
+///
+/// Must run *after* the calling process has already dropped to the
+/// container's mapped identity (`run_container_init`'s
+/// `setresuid`/`setresgid` calls, which happen before any of this
+/// module's mount calls) - files created here are owned by whatever the
+/// calling process's own uid/gid already are by that point, unlike
+/// [`bind_mount`]'s pre-existing, host-root-owned volume directories,
+/// which need an explicit `chown` from the caller instead.
+///
+/// Must be called **before** [`pivot_root_into`], same as [`bind_mount`].
+pub fn mount_tmpfs_secrets(merged_dir: &Path, secrets: &[(String, Vec<u8>)]) -> Result<()> {
+    if secrets.is_empty() {
+        return Ok(());
+    }
+    let secrets_dir = merged_dir.join("run").join("secrets");
+    fs::create_dir_all(&secrets_dir).map_err(error::io(&secrets_dir))?;
+    mount(
+        Some("tmpfs"),
+        &secrets_dir,
+        Some("tmpfs"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        Some("mode=0700,size=1m"),
+    )
+    .map_err(error::syscall("mount(tmpfs secrets)"))?;
+
+    for (name, value) in secrets {
+        let path = secrets_dir.join(name);
+        fs::write(&path, value).map_err(error::io(&path))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).map_err(error::io(&path))?;
+    }
+    Ok(())
 }
