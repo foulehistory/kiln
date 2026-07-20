@@ -14,10 +14,14 @@ pub enum Command {
     /// never a command-line argument - a positional value would end up
     /// in shell history. e.g. `echo -n "hunter2" | kiln secret create
     /// admin-password`
-    Create { name: String },
+    Create {
+        name: String,
+    },
     /// List secret names - never values
     Ls,
-    Rm { name: String },
+    Rm {
+        name: String,
+    },
 }
 
 pub fn run(store: &Store, cmd: Command) -> CliResult {

@@ -54,9 +54,10 @@ fn parse_endpoint(s: &str) -> Endpoint {
     // on ':' when what's on the left looks like it could be a container
     // name/id (no path separator in it).
     match s.split_once(':') {
-        Some((left, right)) if !left.is_empty() && !left.contains('/') && !left.contains('\\') => {
-            Endpoint::Container { id: left.to_string(), path: right.to_string() }
-        }
+        Some((left, right)) if !left.is_empty() && !left.contains('/') && !left.contains('\\') => Endpoint::Container {
+            id: left.to_string(),
+            path: right.to_string(),
+        },
         _ => Endpoint::Host(PathBuf::from(s)),
     }
 }
@@ -65,7 +66,9 @@ fn resolve_running(store: &Store, id: &str) -> CliResult<Container> {
     let mut c = Container::resolve(store, id).ok_or_else(|| CliError::msg(format!("no such container: {id}")))?;
     c.refresh(store);
     if c.status != Status::Running {
-        return Err(CliError::msg(format!("container {id} is not running (cp only works on running containers)")));
+        return Err(CliError::msg(format!(
+            "container {id} is not running (cp only works on running containers)"
+        )));
     }
     Ok(c)
 }
@@ -83,8 +86,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         }
         (Endpoint::Host(host), Endpoint::Container { id, path }) => {
             let c = resolve_running(store, &id)?;
-            write_into_container(&c, &path, &host)
-                .map_err(|e| CliError::msg(format!("copying {} into container: {e}", host.display())))?;
+            write_into_container(&c, &path, &host).map_err(|e| CliError::msg(format!("copying {} into container: {e}", host.display())))?;
         }
         (Endpoint::Host(_), Endpoint::Host(_)) => {
             return Err(CliError::msg("neither path names a container (expected <container>:<path> on one side)"));
@@ -129,8 +131,7 @@ fn copy_bytes(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<(
 /// of around it. Bytes cross from the host-reading parent to the
 /// namespace-joined child over a pipe.
 fn write_into_container(container: &Container, container_path: &str, host_src: &std::path::Path) -> CliResult<()> {
-    let mut host_file =
-        std::fs::File::open(host_src).map_err(|e| CliError::msg(format!("opening {}: {e}", host_src.display())))?;
+    let mut host_file = std::fs::File::open(host_src).map_err(|e| CliError::msg(format!("opening {}: {e}", host_src.display())))?;
     let (read_end, write_end) = nix::unistd::pipe().map_err(|e| CliError::msg(format!("pipe: {e}")))?;
     let container_pid = nix::unistd::Pid::from_raw(container.pid.expect("Running implies pid"));
 
@@ -169,10 +170,18 @@ fn write_into_container(container: &Container, container_path: &str, host_src: &
             let outcome = (|| -> Result<(), String> {
                 join_namespaces(container_pid, &["user", "mnt"]).map_err(|e| format!("join_namespaces: {e}"))?;
                 nix::unistd::setgroups(&[]).map_err(|e| format!("setgroups: {e}"))?;
-                nix::unistd::setresgid(nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0))
-                    .map_err(|e| format!("setresgid: {e}"))?;
-                nix::unistd::setresuid(nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0))
-                    .map_err(|e| format!("setresuid: {e}"))?;
+                nix::unistd::setresgid(
+                    nix::unistd::Gid::from_raw(0),
+                    nix::unistd::Gid::from_raw(0),
+                    nix::unistd::Gid::from_raw(0),
+                )
+                .map_err(|e| format!("setresgid: {e}"))?;
+                nix::unistd::setresuid(
+                    nix::unistd::Uid::from_raw(0),
+                    nix::unistd::Uid::from_raw(0),
+                    nix::unistd::Uid::from_raw(0),
+                )
+                .map_err(|e| format!("setresuid: {e}"))?;
                 let _ = nix::unistd::chdir("/");
                 let mut dst = std::fs::File::create(container_path).map_err(|e| format!("create {container_path}: {e}"))?;
                 let mut buf = [0u8; 65536];

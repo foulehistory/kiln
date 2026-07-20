@@ -45,7 +45,11 @@ fn memory_and_cpu_limits_apply_to_the_real_cgroup_and_survive_a_restart() {
     let container = start(&store, spec, None).expect("start");
 
     let cgroup_dir = format!("/sys/fs/cgroup/kiln/{}", container.id);
-    let mem_max: u64 = std::fs::read_to_string(format!("{cgroup_dir}/memory.max")).unwrap().trim().parse().unwrap();
+    let mem_max: u64 = std::fs::read_to_string(format!("{cgroup_dir}/memory.max"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(mem_max, 64 * 1024 * 1024);
     let cpu_max = std::fs::read_to_string(format!("{cgroup_dir}/cpu.max")).unwrap();
     assert_eq!(cpu_max.trim(), "25000 100000");
@@ -55,7 +59,11 @@ fn memory_and_cpu_limits_apply_to_the_real_cgroup_and_survive_a_restart() {
     assert_eq!(restarted.id, container.id, "restart reuses the same container id");
 
     let cgroup_dir = format!("/sys/fs/cgroup/kiln/{}", restarted.id);
-    let mem_max: u64 = std::fs::read_to_string(format!("{cgroup_dir}/memory.max")).unwrap().trim().parse().unwrap();
+    let mem_max: u64 = std::fs::read_to_string(format!("{cgroup_dir}/memory.max"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert_eq!(mem_max, 64 * 1024 * 1024, "restart should reapply the same memory limit");
     let cpu_max = std::fs::read_to_string(format!("{cgroup_dir}/cpu.max")).unwrap();
     assert_eq!(cpu_max.trim(), "25000 100000", "restart should reapply the same cpu limit");

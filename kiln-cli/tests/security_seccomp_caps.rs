@@ -138,7 +138,10 @@ fn cap_add_widens_the_bounding_set_explicitly() {
 
     let mut spec = RunSpec::new("busybox:latest");
     spec.command = vec!["sleep".to_string(), "30".to_string()];
-    spec.security = SecurityProfile { cap_add: vec!["SYS_ADMIN".to_string()], ..Default::default() };
+    spec.security = SecurityProfile {
+        cap_add: vec!["SYS_ADMIN".to_string()],
+        ..Default::default()
+    };
     let container = start(&store, spec, None).expect("start");
     let pid = container.pid.expect("Running implies pid");
     wait_for_exec(pid, "sleep");
@@ -174,7 +177,11 @@ fn default_profile_blocks_mount_from_inside_the_container() {
     // marker `sh` itself computes - `mount`'s own exit code alone
     // wouldn't survive being the last command in a script reliably
     // across busybox's ash.
-    spec.command = vec!["sh".to_string(), "-c".to_string(), "mount -t tmpfs tmpfs /tmp 2>&1; echo EXIT:$?".to_string()];
+    spec.command = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "mount -t tmpfs tmpfs /tmp 2>&1; echo EXIT:$?".to_string(),
+    ];
     let container = start(&store, spec, None).expect("start");
 
     let exited = wait_for_exit(&store, &container.id);

@@ -13,7 +13,7 @@
 //! up) - a class of regression the lower-level test can't see.
 
 use kiln_cli::commands::run::{start, RunSpec};
-use kiln_image::identity::{SUBORDINATE_GID_BASE, SUBORDINATE_UID_BASE, SUBORDINATE_RANGE};
+use kiln_image::identity::{SUBORDINATE_GID_BASE, SUBORDINATE_RANGE, SUBORDINATE_UID_BASE};
 use kiln_image::registry;
 use kiln_image::store::Store;
 use nix::unistd::Uid;

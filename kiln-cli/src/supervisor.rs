@@ -54,8 +54,8 @@ where
             let mut buf = [0u8; 1];
             let mut got = 0;
             while got < 1 {
-                let n = nix::unistd::read(read_end.as_raw_fd(), &mut buf[got..])
-                    .map_err(|e| CliError::msg(format!("reading supervisor ack: {e}")))?;
+                let n =
+                    nix::unistd::read(read_end.as_raw_fd(), &mut buf[got..]).map_err(|e| CliError::msg(format!("reading supervisor ack: {e}")))?;
                 if n == 0 {
                     return Err(CliError::msg("supervisor exited before the container started"));
                 }
@@ -64,8 +64,7 @@ where
             if buf[0] != 1 {
                 return Err(CliError::msg("container failed to start (see stderr above)"));
             }
-            Container::load(store, &container.id)
-                .ok_or_else(|| CliError::msg("container state missing right after start"))
+            Container::load(store, &container.id).ok_or_else(|| CliError::msg("container state missing right after start"))
         }
         ForkResult::Child => {
             drop(read_end);

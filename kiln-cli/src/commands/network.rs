@@ -78,12 +78,16 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
             println!("{name}");
         }
         Command::Prune => {
-            let referenced: std::collections::HashSet<String> =
-                crate::container::Container::list(store).iter().filter_map(|c| c.network.clone()).collect();
+            let referenced: std::collections::HashSet<String> = crate::container::Container::list(store)
+                .iter()
+                .filter_map(|c| c.network.clone())
+                .collect();
             let mut any = false;
             if let Ok(entries) = std::fs::read_dir(networks_dir(store)) {
                 for entry in entries.flatten() {
-                    let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+                    let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                        continue;
+                    };
                     if !referenced.contains(&stem) && kilnd_core::network::remove_network(store.root(), &stem).is_ok() {
                         println!("{stem}");
                         any = true;
@@ -106,8 +110,10 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
 /// detach) automatically on process exit, no custom signal handler
 /// needed to clean them up.
 fn inspect_live(store: &Store, network: &str) -> CliResult {
-    let containers: Vec<crate::container::Container> =
-        crate::container::Container::list(store).into_iter().filter(|c| c.network.as_deref() == Some(network)).collect();
+    let containers: Vec<crate::container::Container> = crate::container::Container::list(store)
+        .into_iter()
+        .filter(|c| c.network.as_deref() == Some(network))
+        .collect();
     if containers.is_empty() {
         println!("no containers currently on {network}");
         return Ok(());
@@ -160,14 +166,19 @@ impl PortSpec {
             Some((p, proto)) => (p, proto.to_string()),
             None => (s, "tcp".to_string()),
         };
-        let (host, container) =
-            ports.split_once(':').ok_or_else(|| format!("invalid port spec {s:?}: expected <host>:<container>[/tcp|udp]"))?;
+        let (host, container) = ports
+            .split_once(':')
+            .ok_or_else(|| format!("invalid port spec {s:?}: expected <host>:<container>[/tcp|udp]"))?;
         let host_port: u16 = host.parse().map_err(|_| format!("invalid host port in {s:?}"))?;
         let container_port: u16 = container.parse().map_err(|_| format!("invalid container port in {s:?}"))?;
         if proto != "tcp" && proto != "udp" {
             return Err(format!("invalid protocol in {s:?}: expected tcp or udp"));
         }
-        Ok(PortSpec { host_port, container_port, proto })
+        Ok(PortSpec {
+            host_port,
+            container_port,
+            proto,
+        })
     }
 }
 
@@ -197,8 +208,8 @@ pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
     if port.proto == "udp" {
         return spawn_udp_port_forwarder(port, container_ip);
     }
-    let listener = std::net::TcpListener::bind(("0.0.0.0", port.host_port))
-        .map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
+    let listener =
+        std::net::TcpListener::bind(("0.0.0.0", port.host_port)).map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
     let target = format!("{container_ip}:{}", port.container_port);
 
     std::thread::spawn(move || {
@@ -209,7 +220,9 @@ pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
                 let Ok(upstream) = std::net::TcpStream::connect(&target) else { return };
                 let _ = client.set_nodelay(true);
                 let _ = upstream.set_nodelay(true);
-                let (Ok(mut c1), Ok(mut u1)) = (client.try_clone(), upstream.try_clone()) else { return };
+                let (Ok(mut c1), Ok(mut u1)) = (client.try_clone(), upstream.try_clone()) else {
+                    return;
+                };
                 let pump_in = std::thread::spawn(move || {
                     let _ = std::io::copy(&mut c1, &mut u1);
                     // `u1` is a dup'd fd sharing the same socket as `u2`
@@ -262,8 +275,8 @@ pub fn spawn_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
 /// clients over its lifetime accumulates idle threads" is a real but
 /// minor cost, not an unbounded leak past that container's own life.
 fn spawn_udp_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<()> {
-    let front = std::net::UdpSocket::bind(("0.0.0.0", port.host_port))
-        .map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
+    let front =
+        std::net::UdpSocket::bind(("0.0.0.0", port.host_port)).map_err(|e| CliError::msg(format!("binding host port {}: {e}", port.host_port)))?;
     let front = std::sync::Arc::new(front);
     let target = format!("{container_ip}:{}", port.container_port);
 
@@ -280,7 +293,9 @@ fn spawn_udp_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
                 if let Some(backend) = clients_guard.get(&client_addr) {
                     backend.clone()
                 } else {
-                    let Ok(new_backend) = std::net::UdpSocket::bind(("0.0.0.0", 0)) else { continue };
+                    let Ok(new_backend) = std::net::UdpSocket::bind(("0.0.0.0", 0)) else {
+                        continue;
+                    };
                     if new_backend.connect(&target).is_err() {
                         continue;
                     }

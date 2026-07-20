@@ -23,15 +23,10 @@ pub struct Args {
 }
 
 pub fn run(store: &Store, args: Args) -> CliResult {
-    let container = Container::resolve(store, &args.container)
-        .ok_or_else(|| CliError::msg(format!("no such container: {}", args.container)))?;
+    let container = Container::resolve(store, &args.container).ok_or_else(|| CliError::msg(format!("no such container: {}", args.container)))?;
     let log_path = Container::log_path(store, &container.id);
-    let mut file = File::open(&log_path).map_err(|e| {
-        CliError::msg(format!(
-            "no logs for {}: {e} (only detached `-d` containers capture logs)",
-            container.id
-        ))
-    })?;
+    let mut file = File::open(&log_path)
+        .map_err(|e| CliError::msg(format!("no logs for {}: {e} (only detached `-d` containers capture logs)", container.id)))?;
 
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).map_err(|e| CliError::msg(e.to_string()))?;

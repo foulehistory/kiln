@@ -21,7 +21,9 @@ use kiln_image::image::Image;
 use kiln_image::layer;
 use kiln_image::store::Store;
 use kilnd_core::namespaces::Spawn;
-use kilnd_core::rootfs::{bind_mount_host_devices, bind_mount_host_resolv_conf, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec};
+use kilnd_core::rootfs::{
+    bind_mount_host_devices, bind_mount_host_resolv_conf, make_mounts_private, mount_overlay, mount_proc, pivot_root_into, OverlaySpec,
+};
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -133,7 +135,11 @@ pub fn run(store: &Store, args: Args) -> CliResult {
     let seccomp_unconfined = match args.security_opt.as_deref() {
         None => false,
         Some("seccomp=unconfined") => true,
-        Some(other) => return Err(CliError::msg(format!("unsupported --security-opt {other:?} (only seccomp=unconfined is implemented)"))),
+        Some(other) => {
+            return Err(CliError::msg(format!(
+                "unsupported --security-opt {other:?} (only seccomp=unconfined is implemented)"
+            )))
+        }
     };
 
     let spec = RunSpec {
@@ -149,7 +155,11 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         ports: args.ports,
         restart_policy,
         secrets: args.secrets,
-        security: kilnd_core::security::SecurityProfile { seccomp_unconfined, cap_add: args.cap_add, cap_drop: args.cap_drop },
+        security: kilnd_core::security::SecurityProfile {
+            seccomp_unconfined,
+            cap_add: args.cap_add,
+            cap_drop: args.cap_drop,
+        },
     };
 
     let container = start(store, spec, None)?;
@@ -231,13 +241,18 @@ impl RunSpec {
 /// in it. A plain `kiln run` never passes this.
 pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliResult<Container> {
     if !spec.ports.is_empty() && spec.network.is_none() {
-        return Err(CliError::msg("publishing ports (-p) requires --network (there's no container IP to route to otherwise)"));
+        return Err(CliError::msg(
+            "publishing ports (-p) requires --network (there's no container IP to route to otherwise)",
+        ));
     }
-    let port_specs: Vec<super::network::PortSpec> =
-        spec.ports.iter().map(|s| super::network::PortSpec::parse(s)).collect::<Result<_, _>>().map_err(CliError::msg)?;
+    let port_specs: Vec<super::network::PortSpec> = spec
+        .ports
+        .iter()
+        .map(|s| super::network::PortSpec::parse(s))
+        .collect::<Result<_, _>>()
+        .map_err(CliError::msg)?;
 
-    let image =
-        Image::resolve(store, &spec.image).map_err(|e| CliError::msg(format!("resolving image {:?}: {e}", spec.image)))?;
+    let image = Image::resolve(store, &spec.image).map_err(|e| CliError::msg(format!("resolving image {:?}: {e}", spec.image)))?;
     let image_id = image.id();
 
     let command: Vec<String> = if !spec.command.is_empty() {
@@ -245,7 +260,9 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
     } else if let Some(cmd) = &image.config.cmd {
         vec!["/bin/sh".to_string(), "-c".to_string(), cmd.clone()]
     } else {
-        return Err(CliError::msg("image has no default CMD; specify a command, e.g. `kiln run <image> /bin/sh`"));
+        return Err(CliError::msg(
+            "image has no default CMD; specify a command, e.g. `kiln run <image> /bin/sh`",
+        ));
     };
 
     let id = existing_id.unwrap_or_else(generate_id);
@@ -357,12 +374,26 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
 
     let mut env = image.config.env.clone();
     env.extend(spec.extra_env.iter().cloned());
-    let workdir = if image.config.workdir.is_empty() { "/".to_string() } else { image.config.workdir.clone() };
+    let workdir = if image.config.workdir.is_empty() {
+        "/".to_string()
+    } else {
+        image.config.workdir.clone()
+    };
     let command_for_state = command.clone();
 
     let security = spec.security.clone();
     let child_fn = move || -> kilnd_core::Result<()> {
-        run_container_init(&merged, &overlay, &workdir, &env, &command, log_fd, &volume_mounts, &secret_files, &security)
+        run_container_init(
+            &merged,
+            &overlay,
+            &workdir,
+            &env,
+            &command,
+            log_fd,
+            &volume_mounts,
+            &secret_files,
+            &security,
+        )
     };
 
     let container = Container {
@@ -435,8 +466,7 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
 /// `extra_hosts` is non-empty), so re-supplying them here would just
 /// duplicate entries rather than restore anything.
 pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
-    let mut container = Container::resolve(store, id_or_name)
-        .ok_or_else(|| CliError::msg(format!("no such container: {id_or_name}")))?;
+    let mut container = Container::resolve(store, id_or_name).ok_or_else(|| CliError::msg(format!("no such container: {id_or_name}")))?;
     container.refresh(store);
     if container.status == Status::Running {
         return Err(CliError::msg(format!("container {} is already running", container.id)));
@@ -523,10 +553,18 @@ fn run_container_init(
     // clears supplementary groups as part of switching identity, which is
     // why manual repros via nsenter never hit this.
     nix::unistd::setgroups(&[]).map_err(|e| RtError::InvalidArgument(format!("setgroups: {e}")))?;
-    nix::unistd::setresgid(nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0))
-        .map_err(|e| RtError::InvalidArgument(format!("setresgid: {e}")))?;
-    nix::unistd::setresuid(nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0))
-        .map_err(|e| RtError::InvalidArgument(format!("setresuid: {e}")))?;
+    nix::unistd::setresgid(
+        nix::unistd::Gid::from_raw(0),
+        nix::unistd::Gid::from_raw(0),
+        nix::unistd::Gid::from_raw(0),
+    )
+    .map_err(|e| RtError::InvalidArgument(format!("setresgid: {e}")))?;
+    nix::unistd::setresuid(
+        nix::unistd::Uid::from_raw(0),
+        nix::unistd::Uid::from_raw(0),
+        nix::unistd::Uid::from_raw(0),
+    )
+    .map_err(|e| RtError::InvalidArgument(format!("setresuid: {e}")))?;
 
     make_mounts_private()?;
     mount_overlay(overlay)?;

@@ -53,7 +53,13 @@ pub fn stats(container_id: &str) -> Option<Stats> {
         Some((rx, tx)) => (Some(rx), Some(tx)),
         None => (None, None),
     };
-    Some(Stats { memory_current_bytes, cpu_usage_usec, pids_current, rx_bytes, tx_bytes })
+    Some(Stats {
+        memory_current_bytes,
+        cpu_usage_usec,
+        pids_current,
+        rx_bytes,
+        tx_bytes,
+    })
 }
 
 /// Best-effort: a cgroup can only be removed once it has no member

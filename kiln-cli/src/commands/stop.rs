@@ -46,8 +46,7 @@ fn cgroup_is_empty(id: &str) -> bool {
 /// succeed) while the container just kept running. `docker stop` has the
 /// identical two-step shape for the identical reason.
 pub fn stop_container(store: &Store, id_or_name: &str) -> CliResult<Container> {
-    let mut c = Container::resolve(store, id_or_name)
-        .ok_or_else(|| CliError::msg(format!("no such container: {id_or_name}")))?;
+    let mut c = Container::resolve(store, id_or_name).ok_or_else(|| CliError::msg(format!("no such container: {id_or_name}")))?;
     let Some(pid) = c.pid else {
         return Ok(c);
     };

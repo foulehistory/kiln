@@ -38,8 +38,14 @@ fn published_port_is_reachable_from_the_host() {
         return;
     }
 
-    network::run(&store, network::Command::Create { name: "portstest".to_string(), subnet: "172.29.0.0/24".to_string() })
-        .expect("create network");
+    network::run(
+        &store,
+        network::Command::Create {
+            name: "portstest".to_string(),
+            subnet: "172.29.0.0/24".to_string(),
+        },
+    )
+    .expect("create network");
 
     let mut spec = run::RunSpec::new("busybox:latest");
     spec.command = vec![
@@ -89,8 +95,16 @@ fn published_port_is_reachable_from_the_host() {
 
     let _ = kiln_cli::commands::stop::stop_container(&store, &container.id);
     kiln_cli::cgroup::remove(&container.id);
-    let _ = network::run(&store, network::Command::Rm { name: "portstest".to_string() });
+    let _ = network::run(
+        &store,
+        network::Command::Rm {
+            name: "portstest".to_string(),
+        },
+    );
 
-    assert!(connected, "should have been able to connect to 127.0.0.1:18099 through the published port");
+    assert!(
+        connected,
+        "should have been able to connect to 127.0.0.1:18099 through the published port"
+    );
     assert!(body.contains("published-port-works"), "unexpected response body: {body:?}");
 }

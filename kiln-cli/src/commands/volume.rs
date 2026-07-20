@@ -13,15 +13,25 @@ use std::path::PathBuf;
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Command {
-    Create { name: String },
+    Create {
+        name: String,
+    },
     Ls,
-    Rm { name: String },
+    Rm {
+        name: String,
+    },
     /// Remove every volume not referenced by any container's stored `-v` specs
     Prune,
     /// Write a volume's contents to a tar.gz file
-    Export { name: String, output: PathBuf },
+    Export {
+        name: String,
+        output: PathBuf,
+    },
     /// Create a new volume from a tar.gz previously produced by `export`
-    Import { name: String, input: PathBuf },
+    Import {
+        name: String,
+        input: PathBuf,
+    },
 }
 
 pub fn volumes_dir(store: &Store) -> PathBuf {

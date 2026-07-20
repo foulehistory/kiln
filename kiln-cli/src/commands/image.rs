@@ -30,7 +30,10 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
 
 pub fn print_report(report: &ScanReport) {
     println!();
-    println!("CRITICAL: {}  HIGH: {}  MEDIUM: {}  LOW: {}", report.critical, report.high, report.medium, report.low);
+    println!(
+        "CRITICAL: {}  HIGH: {}  MEDIUM: {}  LOW: {}",
+        report.critical, report.high, report.medium, report.low
+    );
     if report.findings.is_empty() {
         println!("No known vulnerabilities found.");
         return;

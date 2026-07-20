@@ -20,8 +20,7 @@ pub struct Args {
 
 pub fn run(store: &Store, args: Args) -> CliResult {
     let kilnfile_path = args.file.unwrap_or_else(|| args.context.join("Kilnfile"));
-    let source = std::fs::read_to_string(&kilnfile_path)
-        .map_err(|e| CliError::msg(format!("reading {}: {e}", kilnfile_path.display())))?;
+    let source = std::fs::read_to_string(&kilnfile_path).map_err(|e| CliError::msg(format!("reading {}: {e}", kilnfile_path.display())))?;
 
     let output = build::build(store, &args.context, &source)?;
     for step in &output.steps {

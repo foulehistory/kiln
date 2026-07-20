@@ -49,7 +49,10 @@ fn on_failure_restart_relaunches_a_crashing_container_under_the_same_id() {
             }
         }
     }
-    assert!(relaunched_pid.is_some(), "supervisor should have relaunched the crashing container with a new pid");
+    assert!(
+        relaunched_pid.is_some(),
+        "supervisor should have relaunched the crashing container with a new pid"
+    );
 
     // Disable the policy before cleanup, or the container the `stop` below
     // kills would just get relaunched again by its own supervisor - the

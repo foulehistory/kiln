@@ -46,7 +46,10 @@ fn nodes_path(store: &Store) -> PathBuf {
 }
 
 pub fn load_nodes(store: &Store) -> Vec<Node> {
-    std::fs::read(nodes_path(store)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(nodes_path(store))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 fn save_nodes(store: &Store, nodes: &[Node]) -> CliResult {
@@ -64,7 +67,11 @@ pub fn find_node(store: &Store, name: &str) -> Option<Node> {
 /// `GET /nodes` handler for the dashboard's Nodes view.
 pub fn ping(node: &Node) -> bool {
     let url = format!("http://{}/version", node.address);
-    ureq::get(&url).set("Authorization", &format!("Bearer {}", node.token)).timeout(std::time::Duration::from_secs(2)).call().is_ok()
+    ureq::get(&url)
+        .set("Authorization", &format!("Bearer {}", node.token))
+        .timeout(std::time::Duration::from_secs(2))
+        .call()
+        .is_ok()
 }
 
 pub fn run(store: &Store, cmd: Command) -> CliResult {
@@ -72,9 +79,15 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
         Command::Add { name, address, token } => {
             let mut nodes = load_nodes(store);
             if nodes.iter().any(|n| n.name == name) {
-                return Err(CliError::msg(format!("node {name} already exists - remove it first to change its address/token")));
+                return Err(CliError::msg(format!(
+                    "node {name} already exists - remove it first to change its address/token"
+                )));
             }
-            nodes.push(Node { name: name.clone(), address, token });
+            nodes.push(Node {
+                name: name.clone(),
+                address,
+                token,
+            });
             save_nodes(store, &nodes)?;
             println!("{name}");
         }

@@ -30,8 +30,7 @@ pub struct Args {
 }
 
 pub fn run(store: &Store, args: Args) -> CliResult {
-    let mut container = Container::resolve(store, &args.container)
-        .ok_or_else(|| CliError::msg(format!("no such container: {}", args.container)))?;
+    let mut container = Container::resolve(store, &args.container).ok_or_else(|| CliError::msg(format!("no such container: {}", args.container)))?;
     container.refresh(store);
     if container.status != Status::Running {
         return Err(CliError::msg(format!("container {} is not running", container.id)));
@@ -55,10 +54,18 @@ pub fn run(store: &Store, args: Args) -> CliResult {
     // would otherwise make DAC checks use group permission bits instead
     // of "other" on any container-root-owned path.
     nix::unistd::setgroups(&[]).map_err(|e| CliError::msg(format!("setgroups: {e}")))?;
-    nix::unistd::setresgid(nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0))
-        .map_err(|e| CliError::msg(format!("setresgid: {e}")))?;
-    nix::unistd::setresuid(nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0))
-        .map_err(|e| CliError::msg(format!("setresuid: {e}")))?;
+    nix::unistd::setresgid(
+        nix::unistd::Gid::from_raw(0),
+        nix::unistd::Gid::from_raw(0),
+        nix::unistd::Gid::from_raw(0),
+    )
+    .map_err(|e| CliError::msg(format!("setresgid: {e}")))?;
+    nix::unistd::setresuid(
+        nix::unistd::Uid::from_raw(0),
+        nix::unistd::Uid::from_raw(0),
+        nix::unistd::Uid::from_raw(0),
+    )
+    .map_err(|e| CliError::msg(format!("setresuid: {e}")))?;
 
     let _ = nix::unistd::chdir("/");
 

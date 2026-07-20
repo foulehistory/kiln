@@ -49,11 +49,17 @@ fn host_to_container_and_back_round_trips_file_content() {
 
     let into_result = cp::run(
         &store,
-        cp::Args { src: host_src.to_str().unwrap().to_string(), dst: format!("{}:/tmp/copied.txt", container.name) },
+        cp::Args {
+            src: host_src.to_str().unwrap().to_string(),
+            dst: format!("{}:/tmp/copied.txt", container.name),
+        },
     );
     let out_result = cp::run(
         &store,
-        cp::Args { src: format!("{}:/tmp/copied.txt", container.name), dst: host_dst.to_str().unwrap().to_string() },
+        cp::Args {
+            src: format!("{}:/tmp/copied.txt", container.name),
+            dst: host_dst.to_str().unwrap().to_string(),
+        },
     );
 
     let _ = kiln_cli::commands::stop::stop_container(&store, &container.id);
