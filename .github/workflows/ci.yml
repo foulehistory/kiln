@@ -1,0 +1,19 @@
+name: ci
+
+# Runs on every push to master and every PR, unlike release.yml (tag-only)
+# - a regression should be caught the moment it lands, not just whenever
+# the next tag happens to be pushed.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run workspace test suite
+        run: cargo test --workspace
