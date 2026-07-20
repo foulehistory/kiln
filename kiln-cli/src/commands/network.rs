@@ -1,8 +1,8 @@
 //! `kiln network` - one Linux bridge plus an `iptables` MASQUERADE rule
-//! per network, in the spirit of the project's own v1 scoping note: real
-//! per-flow observability (`kiln network inspect` showing live traffic
-//! without an external tool like `tcpdump`) is an eBPF-based v2 goal:
-//! v1 is a classic bridge + NAT setup, same as this module.
+//! per network. `inspect --live` additionally attaches `kiln-net-bpf`'s
+//! TC programs (via `kilnd_core::netbpf`) to every container currently on
+//! the network and streams the flows they observe - opt-in only, nothing
+//! here runs unless `--live` is passed.
 //!
 //! The actual bridge/veth mechanism lives in `kilnd_core::network` (see
 //! its own module docs for why: `kiln-image`'s build-time `RUN` steps
@@ -25,6 +25,12 @@ pub enum Command {
     Ls,
     Inspect {
         name: String,
+        /// Stream live per-packet flows for every container on this
+        /// network instead of printing the network's own config (needs
+        /// root/CAP_NET_ADMIN, same as `kiln run` itself) - runs until
+        /// Ctrl-C.
+        #[arg(long)]
+        live: bool,
     },
     Rm {
         name: String,
@@ -59,9 +65,13 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
                 }
             }
         }
-        Command::Inspect { name } => {
+        Command::Inspect { name, live } => {
             let cfg = NetworkConfig::load(store.root(), &name).ok_or_else(|| CliError::msg(format!("no such network: {name}")))?;
-            println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
+            if live {
+                inspect_live(store, &name)?;
+            } else {
+                println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
+            }
         }
         Command::Rm { name } => {
             kilnd_core::network::remove_network(store.root(), &name)?;
@@ -86,6 +96,47 @@ pub fn run(store: &Store, cmd: Command) -> CliResult {
         }
     }
     Ok(())
+}
+
+/// Attaches a `kilnd_core::netbpf::FlowObserver` to every container
+/// currently on `network` and prints each observed packet as it arrives,
+/// until Ctrl-C - same "just loop, let the default SIGINT kill the
+/// process" convention as `kiln logs -f` (see its own module docs): the
+/// TC programs' underlying `bpf_link` file descriptors close (and so
+/// detach) automatically on process exit, no custom signal handler
+/// needed to clean them up.
+fn inspect_live(store: &Store, network: &str) -> CliResult {
+    let containers: Vec<crate::container::Container> =
+        crate::container::Container::list(store).into_iter().filter(|c| c.network.as_deref() == Some(network)).collect();
+    if containers.is_empty() {
+        println!("no containers currently on {network}");
+        return Ok(());
+    }
+
+    let mut observers = Vec::new();
+    for c in &containers {
+        match kilnd_core::netbpf::FlowObserver::attach(&c.id) {
+            Ok(o) => observers.push((c.name.clone(), o)),
+            Err(e) => eprintln!("kiln: not observing {}: {e}", c.name),
+        }
+    }
+    if observers.is_empty() {
+        return Err(CliError::msg("could not attach to any container on this network".to_string()));
+    }
+
+    println!("{:<20}{:<6}{:<5}{:<22}{:<22}BYTES", "CONTAINER", "DIR", "PROTO", "SRC", "DST");
+    loop {
+        for (name, observer) in observers.iter_mut() {
+            for event in observer.drain() {
+                let proto = if event.protocol == 6 { "tcp" } else { "udp" };
+                let dir = if event.to_container { "in" } else { "out" };
+                let src = format!("{}:{}", event.src_addr, event.src_port);
+                let dst = format!("{}:{}", event.dst_addr, event.dst_port);
+                println!("{name:<20}{dir:<6}{proto:<5}{src:<22}{dst:<22}{}", event.len);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 }
 
 /// Attach the container at `pid` to `network` - see

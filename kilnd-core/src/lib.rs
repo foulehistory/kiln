@@ -18,6 +18,7 @@ pub mod conn;
 pub mod error;
 pub mod http;
 pub mod namespaces;
+pub mod netbpf;
 pub mod network;
 pub mod rootfs;
 

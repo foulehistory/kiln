@@ -1,6 +1,7 @@
 pub mod containers;
 pub mod exec;
 pub mod images;
+pub mod network_events;
 pub mod networks;
 pub mod secrets;
 pub mod system;
@@ -46,6 +47,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("POST", ["containers", id, "start"]) => containers::start_existing(store, id).write_to(stream),
         ("GET", ["containers", id, "logs"]) => containers::logs(store, id, req, stream),
         ("GET", ["containers", id, "exec"]) if req.is_upgrade_to("kiln-exec") => exec::handle(store, id, req, stream, reader),
+        ("GET", ["containers", id, "network-events"]) if req.is_upgrade_to("kiln-net-events") => network_events::handle(store, id, req, stream),
         ("GET", ["images"]) => images::list(store).write_to(stream),
         ("POST", ["images", "pull"]) => images::pull(store, req).write_to(stream),
         ("POST", ["images", "push"]) => images::push(store, req).write_to(stream),

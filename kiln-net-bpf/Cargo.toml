@@ -1,0 +1,29 @@
+# A standalone workspace root (not a member of the parent workspace at
+# E:\kiln\Cargo.toml) - it targets bpfel-unknown-none with -Z
+# build-std=core on nightly, which is incompatible with the rest of the
+# (stable, std) workspace. Without this empty [workspace] table, Cargo
+# would walk up from here, find the parent manifest's [workspace], and
+# try to fold this crate's mismatched target/toolchain requirements into
+# it.
+[workspace]
+
+[package]
+name = "kiln-net-bpf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "kiln-net-bpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.1"
+network-types = "0.0"
+
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+debug = false
+strip = true
