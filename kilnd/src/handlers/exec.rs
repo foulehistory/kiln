@@ -136,7 +136,7 @@ pub fn handle(store: &Store, id: &str, req: &Request, stream: &mut Conn, reader:
             let _ = nix::unistd::dup2(slave_fd, 1);
             let _ = nix::unistd::dup2(slave_fd, 2);
             let shell_c = CString::new(shell.clone()).unwrap();
-            let _ = nix::unistd::execv(&shell_c, &[shell_c.clone()]);
+            let _ = nix::unistd::execv(&shell_c, std::slice::from_ref(&shell_c));
             // The requested shell doesn't exist in this image (execv only
             // returns on failure) - /bin/sh is the one shell every image
             // this project's tooling produces is guaranteed to have (it's
@@ -144,7 +144,7 @@ pub fn handle(store: &Store, id: &str, req: &Request, stream: &mut Conn, reader:
             // safe last resort rather than leaving the session dead.
             if shell != "/bin/sh" {
                 let fallback = CString::new("/bin/sh").unwrap();
-                let _ = nix::unistd::execv(&fallback, &[fallback.clone()]);
+                let _ = nix::unistd::execv(&fallback, std::slice::from_ref(&fallback));
             }
             std::process::exit(127);
         }

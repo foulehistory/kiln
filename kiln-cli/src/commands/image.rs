@@ -39,7 +39,7 @@ pub fn print_report(report: &ScanReport) {
         return;
     }
     println!();
-    println!("{:<18}{:<24}{:<16}{:<16}{}", "SEVERITY", "PACKAGE", "INSTALLED", "FIXED", "ID");
+    println!("{:<18}{:<24}{:<16}{:<16}ID", "SEVERITY", "PACKAGE", "INSTALLED", "FIXED");
     let mut findings = report.findings.clone();
     findings.sort_by_key(|f| severity_rank(&f.severity));
     for f in findings {

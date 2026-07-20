@@ -526,6 +526,7 @@ pub fn wait_and_stream(store: &Store, container: &Container) -> CliResult<i32> {
 /// command replaces this process outright, becoming the container's PID 1
 /// directly (no extra init layer), so its own exit status is exactly what
 /// the container's exit status is.
+#[allow(clippy::too_many_arguments)] // one call site (child_fn's closure); a params struct would just move the same fields, not reduce them
 fn run_container_init(
     merged: &Path,
     overlay: &OverlaySpec,

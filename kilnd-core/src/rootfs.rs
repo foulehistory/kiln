@@ -213,8 +213,8 @@ const STANDARD_DEV_SYMLINKS: &[(&str, &str)] = &[
 /// isn't. Every Kiln container's overlay is mounted from *inside* its own
 /// freshly-created user namespace, and the kernel unconditionally forces
 /// `MS_NODEV` onto any filesystem mounted by a process that lacks
-/// `CAP_SYS_ADMIN` in the *initial* user namespace (`mount_namespaces(7)`)
-/// - full capabilities inside our own nested namespace never count for
+/// `CAP_SYS_ADMIN` in the *initial* user namespace (`mount_namespaces(7)`) -
+/// full capabilities inside our own nested namespace never count for
 /// this check. That makes every device node an image's layers provide
 /// permanently inert (`open()` fails with `EACCES` regardless of mode
 /// bits) no matter how faithfully it was materialized. Every other

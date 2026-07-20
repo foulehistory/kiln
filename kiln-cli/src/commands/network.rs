@@ -285,9 +285,7 @@ fn spawn_udp_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
 
     std::thread::spawn(move || {
         let mut buf = [0u8; 65535];
-        loop {
-            let Ok((n, client_addr)) = front.recv_from(&mut buf) else { break };
-
+        while let Ok((n, client_addr)) = front.recv_from(&mut buf) {
             let backend = {
                 let mut clients_guard = clients.lock().expect("client map mutex poisoned");
                 if let Some(backend) = clients_guard.get(&client_addr) {
@@ -307,8 +305,7 @@ fn spawn_udp_port_forwarder(port: &PortSpec, container_ip: String) -> CliResult<
                     let backend_for_reader = new_backend.clone();
                     std::thread::spawn(move || {
                         let mut buf = [0u8; 65535];
-                        loop {
-                            let Ok(n) = backend_for_reader.recv(&mut buf) else { break };
+                        while let Ok(n) = backend_for_reader.recv(&mut buf) {
                             if front_for_replies.send_to(&buf[..n], client_addr).is_err() {
                                 break;
                             }

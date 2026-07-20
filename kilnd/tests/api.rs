@@ -39,7 +39,7 @@ impl Drop for Kilnd {
 
 fn spawn_kilnd(store: &Path, port: u16) -> Kilnd {
     let socket = store.join("kilnd.sock");
-    let child = Command::new(env!("CARGO_BIN_EXE_kilnd"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kilnd"))
         .args(["--store", store.to_str().unwrap(), "--socket", socket.to_str().unwrap()])
         .env("KILN_TCP_PORT", port.to_string())
         .spawn()
@@ -52,6 +52,13 @@ fn spawn_kilnd(store: &Path, port: u16) -> Kilnd {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    // Reap it ourselves before panicking - `Child`'s own `Drop` doesn't
+    // wait() on the process, which would otherwise leave a zombie behind
+    // once it eventually exits (this early-return path is the only one
+    // that doesn't go through `Kilnd`'s own Drop impl, which already
+    // handles this for every other path).
+    let _ = child.kill();
+    let _ = child.wait();
     panic!("kilnd never started listening on 127.0.0.1:{port}");
 }
 

@@ -173,7 +173,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(clean.len() * 3 / 4);
     for chunk in clean.chunks(4) {
         let vals: Vec<u8> = chunk.iter().map(|&b| table[b as usize]).collect();
-        if vals.iter().any(|&v| v == 255) {
+        if vals.contains(&255) {
             return None;
         }
         out.push((vals[0] << 2) | (vals.get(1).copied().unwrap_or(0) >> 4));

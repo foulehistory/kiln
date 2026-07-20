@@ -21,6 +21,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // one Cli::parse() call per process lifetime; boxing every Args variant to shrink this wouldn't be worth the churn at every match arm
 enum Command {
     /// Run a command in a new container
     Run(commands::run::Args),

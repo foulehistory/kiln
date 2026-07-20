@@ -77,7 +77,7 @@ pub fn create(store_root: &Path, name: &str, value: &[u8]) -> io::Result<()> {
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, value)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("encrypting secret: {e}")))?;
+        .map_err(|e| io::Error::other(format!("encrypting secret: {e}")))?;
 
     let mut out = nonce_bytes.to_vec();
     out.extend_from_slice(&ciphertext);

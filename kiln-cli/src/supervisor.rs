@@ -32,8 +32,8 @@ use std::os::fd::AsRawFd;
 ///
 /// `post_spawn`, if given, runs after the container's namespaces exist
 /// (so e.g. `commands::network::attach_container` can wire up a veth
-/// pair into its net namespace) but before it's released to actually run
-/// - see [`kilnd_core::namespaces::spawn_paused`]. Its `Ok` value, if
+/// pair into its net namespace) but before it's released to actually run -
+/// see [`kilnd_core::namespaces::spawn_paused`]. Its `Ok` value, if
 /// `Some((network, ip))`, is stashed as the container's `network`/`ip`
 /// before the initial state is persisted.
 pub fn spawn_detached<F>(

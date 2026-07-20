@@ -212,7 +212,7 @@ where
 
     let hostname = opts.hostname.clone();
 
-    let mut run_child = move || -> isize {
+    let run_child = move || -> isize {
         // We never write to the pipe; drop our copy of the write end so
         // the only writer left is the parent.
         let _ = nix::unistd::close(write_fd);
@@ -246,7 +246,7 @@ where
         }
     };
 
-    let cb: nix::sched::CloneCb = Box::new(move || run_child());
+    let cb: nix::sched::CloneCb = Box::new(run_child);
     let mut stack = vec![0u8; opts.stack_size];
     let flags = opts.namespaces.to_clone_flags();
 

@@ -92,7 +92,7 @@ fn main() {
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let shell_c = CString::new(shell).map_err(|e| Error::InvalidArgument(e.to_string()))?;
-        nix::unistd::execvp(&shell_c, &[shell_c.clone()]).map_err(|e| Error::InvalidArgument(format!("execvp: {e}")))?;
+        nix::unistd::execvp(&shell_c, std::slice::from_ref(&shell_c)).map_err(|e| Error::InvalidArgument(format!("execvp: {e}")))?;
         unreachable!("execvp only returns on error, which is handled above");
     })
     .expect("spawn_isolated");
