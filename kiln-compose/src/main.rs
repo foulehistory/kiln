@@ -16,6 +16,7 @@
 //! service resolving `db` because it correctly declares `depends_on:
 //! [db]`) without the complexity of an embedded DNS resolver.
 
+mod backup;
 mod compose;
 
 use clap::{Parser, Subcommand};
@@ -64,6 +65,29 @@ enum Command {
     Logs(LogsArgs),
     /// Build every service with a `build:` context
     Build,
+    /// Archive kiln.yaml + every declared volume's contents into one file
+    /// (secret values are never included - see `backup`'s module docs)
+    Backup(BackupArgs),
+    /// Recreate kiln.yaml and every volume from a `backup` archive
+    Restore(RestoreArgs),
+}
+
+#[derive(clap::Args)]
+struct BackupArgs {
+    /// Output path (defaults to `<project>-<unix-timestamp>.kiln-backup.tar`
+    /// in the current directory)
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct RestoreArgs {
+    /// A `.kiln-backup.tar` archive produced by `kiln-compose backup`
+    archive: PathBuf,
+    /// Directory to restore kiln.yaml into (defaults to the current
+    /// directory)
+    #[arg(long)]
+    dest: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -90,6 +114,17 @@ fn main() {
         }
     };
 
+    // `restore` deliberately doesn't need a `kiln.yaml` to already exist -
+    // recreating it from the archive is the whole point - so it's handled
+    // before the read below, which every other subcommand needs.
+    if let Command::Restore(args) = &cli.command {
+        if let Err(e) = backup::restore(&store, &args.archive, args.dest.clone()) {
+            eprintln!("kiln-compose: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let source = match std::fs::read_to_string(&cli.file) {
         Ok(s) => s,
         Err(e) => {
@@ -114,6 +149,8 @@ fn main() {
         Command::Ps => cmd_ps(&store, &project, &compose),
         Command::Logs(args) => cmd_logs(&store, &project, &compose, args.follow),
         Command::Build => cmd_build(&store, &project, &context_dir, &compose),
+        Command::Backup(args) => backup::backup(&store, &project, &cli.file, &compose, args.output),
+        Command::Restore(_) => unreachable!("handled above"),
     };
 
     if let Err(e) = result {
