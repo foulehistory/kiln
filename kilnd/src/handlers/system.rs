@@ -4,9 +4,9 @@
 //! straight from the store's own directory layout, the same directories
 //! `kiln-image::store::Store` already owns).
 
-use kilnd_core::http::Response;
 use kiln_cli::commands::gc::collect_garbage;
 use kiln_image::store::Store;
+use kilnd_core::http::Response;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -51,6 +51,10 @@ pub fn gc(store: &Store) -> Response {
     let summary = collect_garbage(store);
     Response::json(
         200,
-        &GcResultJson { blobs_removed: summary.blobs_removed, bytes_freed: summary.bytes_freed, images_removed: summary.images_removed },
+        &GcResultJson {
+            blobs_removed: summary.blobs_removed,
+            bytes_freed: summary.bytes_freed,
+            images_removed: summary.images_removed,
+        },
     )
 }

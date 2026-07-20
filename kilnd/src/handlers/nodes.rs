@@ -20,7 +20,11 @@ pub fn list(store: &Store) -> Response {
         .into_iter()
         .map(|n| {
             let reachable = kiln_cli::commands::node::ping(&n);
-            NodeJson { name: n.name, address: n.address, reachable }
+            NodeJson {
+                name: n.name,
+                address: n.address,
+                reachable,
+            }
         })
         .collect();
     Response::json(200, &out)

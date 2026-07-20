@@ -1,8 +1,8 @@
-use kilnd_core::http::{Request, Response};
 use kiln_image::image::Image;
 use kiln_image::layer::{EntryKind, LayerManifest};
 use kiln_image::registry;
 use kiln_image::store::{Hash, Store};
+use kilnd_core::http::{Request, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -55,7 +55,13 @@ fn image_json(store: &Store, id: Hash, repository: Option<String>, tag: Option<S
         }
     }
 
-    ImageJson { id: id.to_string(), repository, tag, layers, size_bytes }
+    ImageJson {
+        id: id.to_string(),
+        repository,
+        tag,
+        layers,
+        size_bytes,
+    }
 }
 
 #[derive(Serialize)]
@@ -119,9 +125,18 @@ pub fn inspect(store: &Store, id: &str) -> Response {
             let entry_count = manifest.as_ref().map(|m| m.entries.len()).unwrap_or(0);
             let size_bytes = manifest
                 .as_ref()
-                .map(|m| m.entries.iter().filter_map(|e| if let EntryKind::File { size, .. } = &e.kind { Some(*size) } else { None }).sum())
+                .map(|m| {
+                    m.entries
+                        .iter()
+                        .filter_map(|e| if let EntryKind::File { size, .. } = &e.kind { Some(*size) } else { None })
+                        .sum()
+                })
                 .unwrap_or(0);
-            LayerDetailJson { hash: layer_id.to_string(), entry_count, size_bytes }
+            LayerDetailJson {
+                hash: layer_id.to_string(),
+                entry_count,
+                size_bytes,
+            }
         })
         .collect();
 
@@ -263,7 +278,14 @@ pub fn build(store: &Store, req: &Request) -> Response {
         201,
         &BuildResultJson {
             image_id: output.image_id.to_string(),
-            steps: output.steps.into_iter().map(|s| BuildStepJson { instruction: s.instruction, cached: s.cached }).collect(),
+            steps: output
+                .steps
+                .into_iter()
+                .map(|s| BuildStepJson {
+                    instruction: s.instruction,
+                    cached: s.cached,
+                })
+                .collect(),
             tagged,
         },
     )

@@ -4,8 +4,8 @@
 //! other Kiln surface) - the same one-way property a real password
 //! manager's "create" flow has.
 
-use kilnd_core::http::{Request, Response};
 use kiln_image::store::Store;
+use kilnd_core::http::{Request, Response};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -14,7 +14,10 @@ pub struct SecretJson {
 }
 
 pub fn list(store: &Store) -> Response {
-    let out: Vec<SecretJson> = kiln_image::secrets::list(store.root()).into_iter().map(|name| SecretJson { name }).collect();
+    let out: Vec<SecretJson> = kiln_image::secrets::list(store.root())
+        .into_iter()
+        .map(|name| SecretJson { name })
+        .collect();
     Response::json(200, &out)
 }
 

@@ -70,7 +70,12 @@ fn request(port: u16, method: &str, path: &str, json_body: Option<&str>) -> (u16
     let mut resp = String::new();
     stream.read_to_string(&mut resp).expect("read response");
 
-    let status: u16 = resp.lines().next().and_then(|l| l.split_whitespace().nth(1)).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let status: u16 = resp
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let body = resp.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
     (status, body)
 }
@@ -109,7 +114,10 @@ fn delete_networks_name_removes_a_network() {
 
     let (status, body) = request(kilnd.port, "GET", "/networks", None);
     assert_eq!(status, 200);
-    assert!(!body.contains("apitest-remove"), "the removed network should be gone from GET /networks: {body}");
+    assert!(
+        !body.contains("apitest-remove"),
+        "the removed network should be gone from GET /networks: {body}"
+    );
 
     let (status, _) = request(kilnd.port, "DELETE", "/networks/no-such-network", None);
     assert_eq!(status, 404, "removing a network that doesn't exist should 404");
@@ -131,14 +139,20 @@ fn delete_images_id_untags_and_deletes_the_image() {
 
     let (status, body) = request(kilnd.port, "GET", "/images", None);
     assert_eq!(status, 200);
-    assert!(body.contains("apitest-image"), "the tagged image should show up in GET /images first: {body}");
+    assert!(
+        body.contains("apitest-image"),
+        "the tagged image should show up in GET /images first: {body}"
+    );
 
     let (status, _) = request(kilnd.port, "DELETE", &format!("/images/{}", output.image_id), None);
     assert_eq!(status, 200, "removing an existing image should return 200");
 
     let (status, body) = request(kilnd.port, "GET", "/images", None);
     assert_eq!(status, 200);
-    assert!(!body.contains("apitest-image"), "the removed image's tag should be gone from GET /images: {body}");
+    assert!(
+        !body.contains("apitest-image"),
+        "the removed image's tag should be gone from GET /images: {body}"
+    );
 
     let (status, _) = request(kilnd.port, "DELETE", &format!("/images/{}", output.image_id), None);
     assert_eq!(status, 404, "removing an already-removed image should 404");

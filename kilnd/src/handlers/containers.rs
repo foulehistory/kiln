@@ -1,7 +1,7 @@
-use kilnd_core::conn::Conn;
-use kilnd_core::http::{Request, Response};
 use kiln_cli::container::{Container, Status};
 use kiln_image::store::Store;
+use kilnd_core::conn::Conn;
+use kilnd_core::http::{Request, Response};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::time::Duration;
@@ -268,7 +268,12 @@ pub fn logs(store: &Store, id: &str, req: &Request, stream: &mut Conn) -> io::Re
 
     if !follow {
         let body = std::fs::read(&log_path).unwrap_or_default();
-        return (Response { status: 200, headers: vec![("Content-Type".into(), "text/plain".into())], body }).write_to(stream);
+        return (Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "text/plain".into())],
+            body,
+        })
+        .write_to(stream);
     }
 
     write!(

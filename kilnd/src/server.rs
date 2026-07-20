@@ -1,6 +1,6 @@
+use kiln_image::store::Store;
 use kilnd_core::conn::Conn;
 use kilnd_core::http::{Request, Response};
-use kiln_image::store::Store;
 use std::io::{self, BufReader};
 use std::net::TcpListener;
 use std::os::unix::net::UnixListener;
@@ -28,7 +28,10 @@ pub const DEFAULT_TCP_PORT: u16 = 7867;
 /// (e.g. an isolated instance under test) without colliding on the
 /// well-known port.
 fn tcp_port() -> u16 {
-    std::env::var("KILN_TCP_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_TCP_PORT)
+    std::env::var("KILN_TCP_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_TCP_PORT)
 }
 
 /// A second, separate TCP listener - bound `0.0.0.0`, unlike the default
@@ -48,7 +51,10 @@ const DEFAULT_REMOTE_PORT: u16 = 7868;
 
 fn remote_config() -> Option<RemoteConfig> {
     let token = std::env::var("KILN_REMOTE_TOKEN").ok().filter(|t| !t.is_empty())?;
-    let port = std::env::var("KILN_REMOTE_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_REMOTE_PORT);
+    let port = std::env::var("KILN_REMOTE_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_REMOTE_PORT);
     Some(RemoteConfig { token, port })
 }
 
@@ -127,7 +133,10 @@ pub fn run(store: Store, socket_path: &Path) -> io::Result<()> {
 fn spawn_handler(store: Arc<Store>, conn: Conn, expected_token: Option<Arc<String>>) {
     std::thread::spawn(move || {
         if let Err(e) = handle_connection(&store, conn, expected_token.as_ref().map(|t| t.as_str())) {
-            if !matches!(e.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
+            if !matches!(
+                e.kind(),
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ) {
                 eprintln!("kilnd: connection error: {e}");
             }
         }

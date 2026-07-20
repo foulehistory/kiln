@@ -110,11 +110,19 @@ pub fn handle(store: &Store, id: &str, req: &Request, stream: &mut Conn, reader:
                 eprintln!("kiln-exec: setgroups: {e}");
                 std::process::exit(1);
             }
-            if let Err(e) = nix::unistd::setresgid(nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0), nix::unistd::Gid::from_raw(0)) {
+            if let Err(e) = nix::unistd::setresgid(
+                nix::unistd::Gid::from_raw(0),
+                nix::unistd::Gid::from_raw(0),
+                nix::unistd::Gid::from_raw(0),
+            ) {
                 eprintln!("kiln-exec: setresgid: {e}");
                 std::process::exit(1);
             }
-            if let Err(e) = nix::unistd::setresuid(nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0), nix::unistd::Uid::from_raw(0)) {
+            if let Err(e) = nix::unistd::setresuid(
+                nix::unistd::Uid::from_raw(0),
+                nix::unistd::Uid::from_raw(0),
+                nix::unistd::Uid::from_raw(0),
+            ) {
                 eprintln!("kiln-exec: setresuid: {e}");
                 std::process::exit(1);
             }
@@ -142,7 +150,10 @@ pub fn handle(store: &Store, id: &str, req: &Request, stream: &mut Conn, reader:
         }
         Ok(ForkResult::Parent { child }) => {
             drop(pty.slave);
-            write!(stream, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: kiln-exec\r\nConnection: Upgrade\r\n\r\n")?;
+            write!(
+                stream,
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: kiln-exec\r\nConnection: Upgrade\r\n\r\n"
+            )?;
             stream.flush()?;
             shuttle(pty.master.as_raw_fd(), stream, reader, child)
         }
@@ -150,12 +161,7 @@ pub fn handle(store: &Store, id: &str, req: &Request, stream: &mut Conn, reader:
     }
 }
 
-fn shuttle(
-    master_fd: std::os::fd::RawFd,
-    stream: &mut Conn,
-    reader: &mut BufReader<Conn>,
-    child: nix::unistd::Pid,
-) -> io::Result<()> {
+fn shuttle(master_fd: std::os::fd::RawFd, stream: &mut Conn, reader: &mut BufReader<Conn>, child: nix::unistd::Pid) -> io::Result<()> {
     // The pty master fd supports independent concurrent read/write from
     // different threads (it's a tty, not a regular file with a shared
     // seek position), so one dup'd handle per direction is all that's

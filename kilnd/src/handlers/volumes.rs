@@ -1,7 +1,7 @@
-use kilnd_core::http::{Request, Response};
 use kiln_cli::commands::volume;
 use kiln_cli::container::Container;
 use kiln_image::store::Store;
+use kilnd_core::http::{Request, Response};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -42,7 +42,12 @@ pub fn list(store: &Store) -> Response {
         let path = entry.path();
         let size_bytes = crate::handlers::dir_size(&path);
         let host_path = path.to_string_lossy().into_owned();
-        out.push(VolumeJson { name, containers, size_bytes, host_path });
+        out.push(VolumeJson {
+            name,
+            containers,
+            size_bytes,
+            host_path,
+        });
     }
 
     Response::json(200, &out)

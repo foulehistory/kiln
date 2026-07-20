@@ -39,7 +39,10 @@ pub fn handle(store: &Store, id: &str, _req: &Request, stream: &mut Conn) -> io:
         Err(e) => return Response::text(400, format!("{e}")).write_to(stream),
     };
 
-    write!(stream, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: kiln-net-events\r\nConnection: Upgrade\r\n\r\n")?;
+    write!(
+        stream,
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: kiln-net-events\r\nConnection: Upgrade\r\n\r\n"
+    )?;
     stream.flush()?;
 
     // A client that's gone stops accepting writes, which is the only

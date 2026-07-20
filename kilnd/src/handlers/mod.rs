@@ -8,9 +8,9 @@ pub mod secrets;
 pub mod system;
 pub mod volumes;
 
+use kiln_image::store::Store;
 use kilnd_core::conn::Conn;
 use kilnd_core::http::{Request, Response};
-use kiln_image::store::Store;
 use std::io::{self, BufReader};
 
 /// Recursively sums file sizes under `path` - shared by `volumes::list`
@@ -35,9 +35,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
     let segments: Vec<&str> = req.path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
 
     match (req.method.as_str(), segments.as_slice()) {
-        ("GET", ["version"]) => {
-            Response::json(200, &serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })).write_to(stream)
-        }
+        ("GET", ["version"]) => Response::json(200, &serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })).write_to(stream),
         ("GET", ["containers"]) => containers::list(store).write_to(stream),
         ("POST", ["containers"]) => containers::create(store, req).write_to(stream),
         ("GET", ["containers", id]) => containers::inspect(store, id).write_to(stream),

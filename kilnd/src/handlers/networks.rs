@@ -1,7 +1,7 @@
-use kilnd_core::http::{Request, Response};
 use kiln_cli::commands::network::{self, NetworkConfig};
 use kiln_cli::container::Container;
 use kiln_image::store::Store;
+use kilnd_core::http::{Request, Response};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -31,16 +31,30 @@ pub fn list(store: &Store) -> Response {
     let all_containers = Container::list(store);
 
     for entry in entries.flatten() {
-        let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+        let Some(stem) = entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
         let Some(cfg) = NetworkConfig::load(store.root(), &stem) else { continue };
 
         let containers: Vec<NetworkContainerJson> = all_containers
             .iter()
             .filter(|c| c.network.as_deref() == Some(cfg.name.as_str()))
-            .filter_map(|c| c.ip.clone().map(|ip| NetworkContainerJson { id: c.id.clone(), name: c.name.clone(), ip }))
+            .filter_map(|c| {
+                c.ip.clone().map(|ip| NetworkContainerJson {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    ip,
+                })
+            })
             .collect();
 
-        out.push(NetworkJson { name: cfg.name, bridge: cfg.bridge, subnet: cfg.subnet, gateway: cfg.gateway, containers });
+        out.push(NetworkJson {
+            name: cfg.name,
+            bridge: cfg.bridge,
+            subnet: cfg.subnet,
+            gateway: cfg.gateway,
+            containers,
+        });
     }
 
     Response::json(200, &out)
