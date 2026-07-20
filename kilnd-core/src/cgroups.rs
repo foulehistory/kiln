@@ -159,11 +159,7 @@ impl CgroupV2 {
     }
 
     pub fn apply_limits(&self, limits: &Limits) -> Result<()> {
-        let period = if limits.cpu_period_us == 0 {
-            100_000
-        } else {
-            limits.cpu_period_us
-        };
+        let period = if limits.cpu_period_us == 0 { 100_000 } else { limits.cpu_period_us };
         let cpu_max = match limits.cpu_max_us {
             Some(us) => format!("{us} {period}"),
             None => format!("max {period}"),
@@ -206,11 +202,7 @@ impl CgroupV2 {
     /// Current PIDs in this cgroup.
     pub fn processes(&self) -> Result<Vec<Pid>> {
         let contents = read_file(&self.dir.join("cgroup.procs"))?;
-        Ok(contents
-            .lines()
-            .filter_map(|l| l.trim().parse::<i32>().ok())
-            .map(Pid::from_raw)
-            .collect())
+        Ok(contents.lines().filter_map(|l| l.trim().parse::<i32>().ok()).map(Pid::from_raw).collect())
     }
 
     pub fn memory_current(&self) -> Result<u64> {

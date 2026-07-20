@@ -76,9 +76,7 @@ fn container_writes_copy_up_without_touching_the_lower_layer() {
 
         let before = fs::read_to_string("/hello.txt").map_err(io_err("/hello.txt"))?;
         if before != "from-lower" {
-            return Err(Error::InvalidArgument(format!(
-                "expected lower content inside container, got {before:?}"
-            )));
+            return Err(Error::InvalidArgument(format!("expected lower content inside container, got {before:?}")));
         }
 
         fs::write("/hello.txt", "modified-by-container").map_err(io_err("/hello.txt"))?;
@@ -92,9 +90,7 @@ fn container_writes_copy_up_without_touching_the_lower_layer() {
             .filter(|e| e.file_name().to_string_lossy().chars().all(|c| c.is_ascii_digit()))
             .count();
         if pid_dirs != 1 {
-            return Err(Error::InvalidArgument(format!(
-                "expected exactly 1 visible pid, saw {pid_dirs}"
-            )));
+            return Err(Error::InvalidArgument(format!("expected exactly 1 visible pid, saw {pid_dirs}")));
         }
 
         let fd = unsafe { BorrowedFd::borrow_raw(report_write_fd) };
@@ -121,12 +117,6 @@ fn container_writes_copy_up_without_touching_the_lower_layer() {
         "lower (read-only) layer must never be modified"
     );
     // ...and the container's writes landed in the upper (writable) layer.
-    assert_eq!(
-        fs::read_to_string(upper.join("hello.txt")).unwrap(),
-        "modified-by-container"
-    );
-    assert_eq!(
-        fs::read_to_string(upper.join("new-file.txt")).unwrap(),
-        "created-in-container"
-    );
+    assert_eq!(fs::read_to_string(upper.join("hello.txt")).unwrap(), "modified-by-container");
+    assert_eq!(fs::read_to_string(upper.join("new-file.txt")).unwrap(), "created-in-container");
 }

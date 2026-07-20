@@ -25,8 +25,7 @@ fn memory_limit_is_enforced_by_the_kernel() {
     }
 
     let mount_root = Path::new("/sys/fs/cgroup");
-    let kiln_root =
-        ensure_delegated_root(mount_root, "kiln-test").expect("delegate controllers to kiln-test");
+    let kiln_root = ensure_delegated_root(mount_root, "kiln-test").expect("delegate controllers to kiln-test");
 
     let id = format!("memtest-{}", std::process::id());
     let limits = Limits {
@@ -87,13 +86,10 @@ fn memory_limit_is_enforced_by_the_kernel() {
 
     match waitpid(child_pid, None).expect("waitpid") {
         WaitStatus::Signaled(_, Signal::SIGKILL, _) => {}
-        other => panic!(
-            "expected the memory cgroup's OOM killer to SIGKILL the child, got {other:?}"
-        ),
+        other => panic!("expected the memory cgroup's OOM killer to SIGKILL the child, got {other:?}"),
     }
 
-    let mem_events =
-        std::fs::read_to_string(cgroup.path().join("memory.events")).expect("memory.events");
+    let mem_events = std::fs::read_to_string(cgroup.path().join("memory.events")).expect("memory.events");
     let oom_kills: u64 = mem_events
         .lines()
         .find(|l| l.starts_with("oom_kill "))
@@ -112,8 +108,7 @@ fn cpu_and_memory_limits_round_trip_through_cgroupfs() {
     }
 
     let mount_root = Path::new("/sys/fs/cgroup");
-    let kiln_root =
-        ensure_delegated_root(mount_root, "kiln-test").expect("delegate controllers to kiln-test");
+    let kiln_root = ensure_delegated_root(mount_root, "kiln-test").expect("delegate controllers to kiln-test");
 
     let id = format!("limits-{}", std::process::id());
     let limits = Limits {

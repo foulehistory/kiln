@@ -60,7 +60,13 @@ impl Request {
             _ => Vec::new(),
         };
 
-        Ok(Some(Request { method, path, query, headers, body }))
+        Ok(Some(Request {
+            method,
+            path,
+            query,
+            headers,
+            body,
+        }))
     }
 
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
@@ -117,11 +123,19 @@ pub struct Response {
 impl Response {
     pub fn json<T: serde::Serialize>(status: u16, value: &T) -> Self {
         let body = serde_json::to_vec(value).expect("serialization cannot fail");
-        Response { status, headers: vec![("Content-Type".into(), "application/json".into())], body }
+        Response {
+            status,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body,
+        }
     }
 
     pub fn text(status: u16, s: impl Into<String>) -> Self {
-        Response { status, headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())], body: s.into().into_bytes() }
+        Response {
+            status,
+            headers: vec![("Content-Type".into(), "text/plain; charset=utf-8".into())],
+            body: s.into().into_bytes(),
+        }
     }
 
     pub fn write_to(&self, w: &mut impl Write) -> io::Result<()> {

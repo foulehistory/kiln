@@ -79,7 +79,9 @@ fn parse_capability(raw: &str) -> Result<caps::Capability> {
     } else {
         format!("CAP_{}", raw.to_ascii_uppercase())
     };
-    normalized.parse().map_err(|_| Error::InvalidArgument(format!("unknown capability: {raw:?}")))
+    normalized
+        .parse()
+        .map_err(|_| Error::InvalidArgument(format!("unknown capability: {raw:?}")))
 }
 
 /// Drops every capability from the bounding set except
@@ -173,11 +175,19 @@ pub fn apply_seccomp(profile: &SecurityProfile) -> Result<()> {
         rules.insert(syscall, vec![]);
     }
 
-    let arch: seccompiler::TargetArch =
-        std::env::consts::ARCH.try_into().map_err(|_| Error::InvalidArgument(format!("unsupported seccomp arch: {}", std::env::consts::ARCH)))?;
+    let arch: seccompiler::TargetArch = std::env::consts::ARCH
+        .try_into()
+        .map_err(|_| Error::InvalidArgument(format!("unsupported seccomp arch: {}", std::env::consts::ARCH)))?;
 
-    let filter = seccompiler::SeccompFilter::new(rules, seccompiler::SeccompAction::Allow, seccompiler::SeccompAction::Errno(libc::EPERM as u32), arch)
-        .map_err(|e| Error::InvalidArgument(format!("building seccomp filter: {e}")))?;
-    let program: seccompiler::BpfProgram = filter.try_into().map_err(|e: seccompiler::BackendError| Error::InvalidArgument(format!("compiling seccomp filter: {e}")))?;
+    let filter = seccompiler::SeccompFilter::new(
+        rules,
+        seccompiler::SeccompAction::Allow,
+        seccompiler::SeccompAction::Errno(libc::EPERM as u32),
+        arch,
+    )
+    .map_err(|e| Error::InvalidArgument(format!("building seccomp filter: {e}")))?;
+    let program: seccompiler::BpfProgram = filter
+        .try_into()
+        .map_err(|e: seccompiler::BackendError| Error::InvalidArgument(format!("compiling seccomp filter: {e}")))?;
     seccompiler::apply_filter(&program).map_err(|e| Error::InvalidArgument(format!("applying seccomp filter: {e}")))
 }

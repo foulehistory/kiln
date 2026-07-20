@@ -46,17 +46,10 @@ pub struct OverlaySpec {
 /// exist as a directory.
 pub fn mount_overlay(spec: &OverlaySpec) -> Result<()> {
     if spec.lower_dirs.is_empty() {
-        return Err(error::Error::InvalidArgument(
-            "overlay mount requires at least one lowerdir".into(),
-        ));
+        return Err(error::Error::InvalidArgument("overlay mount requires at least one lowerdir".into()));
     }
 
-    let lower = spec
-        .lower_dirs
-        .iter()
-        .map(|p| p.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(":");
+    let lower = spec.lower_dirs.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(":");
     // `userxattr`: every Kiln container mounts its overlay from inside a
     // freshly-created (non-initial) user namespace. Overlayfs's default
     // bookkeeping xattrs live in the `trusted.*` namespace, which is
@@ -112,14 +105,7 @@ pub fn unmount(target: &Path) -> Result<()> {
 /// propagation settings, which on most distributions are "shared". This
 /// must run before any other mount/pivot_root calls in the new namespace.
 pub fn make_mounts_private() -> Result<()> {
-    mount(
-        None::<&str>,
-        "/",
-        None::<&str>,
-        MsFlags::MS_PRIVATE | MsFlags::MS_REC,
-        None::<&str>,
-    )
-    .map_err(error::syscall("mount(MS_PRIVATE)"))
+    mount(None::<&str>, "/", None::<&str>, MsFlags::MS_PRIVATE | MsFlags::MS_REC, None::<&str>).map_err(error::syscall("mount(MS_PRIVATE)"))
 }
 
 /// Switch the process's root filesystem to `new_root` using
@@ -136,14 +122,7 @@ pub fn pivot_root_into(new_root: &Path) -> Result<()> {
     // when new_root is a plain directory rather than something already
     // mounted (e.g. our overlayfs merged_dir, which already qualifies,
     // but callers may also point this at a plain rootfs directory).
-    mount(
-        Some(new_root),
-        new_root,
-        None::<&str>,
-        MsFlags::MS_BIND | MsFlags::MS_REC,
-        None::<&str>,
-    )
-    .map_err(error::syscall("mount(bind self)"))?;
+    mount(Some(new_root), new_root, None::<&str>, MsFlags::MS_BIND | MsFlags::MS_REC, None::<&str>).map_err(error::syscall("mount(bind self)"))?;
 
     // pivot_root(2) also wants somewhere under new_root to move the old
     // root to.
@@ -151,16 +130,14 @@ pub fn pivot_root_into(new_root: &Path) -> Result<()> {
     fs::create_dir_all(&old_root).map_err(error::io(&old_root))?;
 
     chdir(new_root).map_err(error::syscall("chdir(new_root)"))?;
-    nix::unistd::pivot_root(".", ".kiln-old-root")
-        .map_err(error::syscall("pivot_root"))?;
+    nix::unistd::pivot_root(".", ".kiln-old-root").map_err(error::syscall("pivot_root"))?;
     chdir("/").map_err(error::syscall("chdir(/)"))?;
 
     // The old root is now mounted at /.kiln-old-root inside the new root;
     // detach it (MNT_DETACH: unmount once nothing still references it,
     // without blocking) and remove the now-empty mountpoint directory so
     // no trace of the host filesystem remains reachable.
-    umount2("/.kiln-old-root", MntFlags::MNT_DETACH)
-        .map_err(error::syscall("umount2(old root)"))?;
+    umount2("/.kiln-old-root", MntFlags::MNT_DETACH).map_err(error::syscall("umount2(old root)"))?;
     fs::remove_dir("/.kiln-old-root").map_err(error::io("/.kiln-old-root"))?;
 
     Ok(())
@@ -205,8 +182,7 @@ pub fn mount_proc(target: &Path) -> Result<()> {
 /// container's new `/`.
 pub fn bind_mount(src: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).map_err(error::io(dest))?;
-    mount(Some(src), dest, None::<&str>, MsFlags::MS_BIND | MsFlags::MS_REC, None::<&str>)
-        .map_err(error::syscall("mount(bind volume)"))
+    mount(Some(src), dest, None::<&str>, MsFlags::MS_BIND | MsFlags::MS_REC, None::<&str>).map_err(error::syscall("mount(bind volume)"))
 }
 
 /// The handful of device nodes almost every real program assumes exist
@@ -219,8 +195,12 @@ const STANDARD_DEVICES: &[&str] = &["null", "zero", "full", "random", "urandom",
 /// work, both common enough in real entrypoint scripts (MySQL's own
 /// among them) that a container without them fails in confusing,
 /// script-specific ways rather than a clean "no such file".
-const STANDARD_DEV_SYMLINKS: &[(&str, &str)] =
-    &[("fd", "/proc/self/fd"), ("stdin", "/proc/self/fd/0"), ("stdout", "/proc/self/fd/1"), ("stderr", "/proc/self/fd/2")];
+const STANDARD_DEV_SYMLINKS: &[(&str, &str)] = &[
+    ("fd", "/proc/self/fd"),
+    ("stdin", "/proc/self/fd/0"),
+    ("stdout", "/proc/self/fd/1"),
+    ("stderr", "/proc/self/fd/2"),
+];
 
 /// Populate the container's `/dev` with the bare minimum every real
 /// program assumes exists and works - not an attempt at a complete
@@ -265,8 +245,7 @@ pub fn bind_mount_host_devices(merged_dir: &Path) -> Result<()> {
         // non-functional device-special file described above).
         let _ = fs::remove_file(&target);
         fs::File::create(&target).map_err(error::io(&target))?;
-        mount(Some(&host_path), &target, None::<&str>, MsFlags::MS_BIND, None::<&str>)
-            .map_err(error::syscall("mount(bind device)"))?;
+        mount(Some(&host_path), &target, None::<&str>, MsFlags::MS_BIND, None::<&str>).map_err(error::syscall("mount(bind device)"))?;
     }
 
     for (name, dest) in STANDARD_DEV_SYMLINKS {

@@ -93,7 +93,9 @@ impl FlowObserver {
     /// calls in a loop, `kilnd`'s WebSocket handler does the same on its
     /// connection's own thread.
     pub fn drain(&mut self) -> Vec<FlowEvent> {
-        let Ok(ring) = self.ebpf.map_mut("EVENTS").map(RingBuf::try_from).transpose() else { return Vec::new() };
+        let Ok(ring) = self.ebpf.map_mut("EVENTS").map(RingBuf::try_from).transpose() else {
+            return Vec::new();
+        };
         let Some(mut ring) = ring else { return Vec::new() };
         let mut out = Vec::new();
         while let Some(item) = ring.next() {

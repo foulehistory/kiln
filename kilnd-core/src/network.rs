@@ -82,7 +82,10 @@ pub fn bridge_name(network_name: &str) -> String {
 }
 
 pub fn subnet_gateway(subnet: &str) -> Result<String> {
-    let net = subnet.split('/').next().ok_or_else(|| Error::InvalidArgument(format!("invalid subnet {subnet:?}")))?;
+    let net = subnet
+        .split('/')
+        .next()
+        .ok_or_else(|| Error::InvalidArgument(format!("invalid subnet {subnet:?}")))?;
     let mut parts: Vec<&str> = net.split('.').collect();
     if parts.len() != 4 {
         return Err(Error::InvalidArgument(format!("invalid subnet {subnet:?}, expected a.b.c.d/nn")));
@@ -111,7 +114,19 @@ pub fn setup_bridge(cfg: &NetworkConfig) -> Result<()> {
     run_cmd("ip", &["addr", "add", &format!("{}/24", cfg.gateway), "dev", &cfg.bridge])?;
     let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
     let _ = ProcessCommand::new("iptables")
-        .args(["-t", "nat", "-A", "POSTROUTING", "-s", &cfg.subnet, "!", "-o", &cfg.bridge, "-j", "MASQUERADE"])
+        .args([
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            &cfg.subnet,
+            "!",
+            "-o",
+            &cfg.bridge,
+            "-j",
+            "MASQUERADE",
+        ])
         .status();
     Ok(())
 }
@@ -129,7 +144,19 @@ pub fn remove_network(store_root: &Path, name: &str) -> Result<()> {
     let cfg = NetworkConfig::load(store_root, name).ok_or_else(|| Error::InvalidArgument(format!("no such network: {name}")))?;
     let _ = run_cmd("ip", &["link", "del", &cfg.bridge]);
     let _ = ProcessCommand::new("iptables")
-        .args(["-t", "nat", "-D", "POSTROUTING", "-s", &cfg.subnet, "!", "-o", &cfg.bridge, "-j", "MASQUERADE"])
+        .args([
+            "-t",
+            "nat",
+            "-D",
+            "POSTROUTING",
+            "-s",
+            &cfg.subnet,
+            "!",
+            "-o",
+            &cfg.bridge,
+            "-j",
+            "MASQUERADE",
+        ])
         .status();
     std::fs::remove_file(config_path(store_root, name)).map_err(error::io(config_path(store_root, name)))
 }
@@ -145,7 +172,13 @@ pub fn ensure_network(store_root: &Path, name: &str, subnet: &str) -> Result<Net
     }
     let bridge = bridge_name(name);
     let gateway = subnet_gateway(subnet)?;
-    let config = NetworkConfig { name: name.to_string(), bridge: bridge.clone(), subnet: subnet.to_string(), gateway, next_host: 2 };
+    let config = NetworkConfig {
+        name: name.to_string(),
+        bridge: bridge.clone(),
+        subnet: subnet.to_string(),
+        gateway,
+        next_host: 2,
+    };
     // The bridge name is a deterministic hash of `name`, a real kernel
     // resource with no notion of which store asked for it - but "does
     // this network already exist" was only ever checked via *this*

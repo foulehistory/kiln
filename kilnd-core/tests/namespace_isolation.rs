@@ -33,10 +33,7 @@ fn child_is_isolated_and_uid_is_remapped() {
     }
 
     let parent_pid = Pid::this();
-    let parent_ns_ids: Vec<String> = NS_KINDS
-        .iter()
-        .map(|k| ns_id(parent_pid, k).expect("read parent ns id"))
-        .collect();
+    let parent_ns_ids: Vec<String> = NS_KINDS.iter().map(|k| ns_id(parent_pid, k).expect("read parent ns id")).collect();
 
     // Child reports {pid, uid, gid} it observes about itself, from inside
     // its own namespaces, back to us over a pipe.
@@ -73,10 +70,8 @@ fn child_is_isolated_and_uid_is_remapped() {
         // translates that real credential back for internal queries. See
         // namespaces.rs's module docs for the full explanation of why
         // this two-step (write map, then setresuid) dance is required.
-        nix::unistd::setresgid(Gid::from_raw(0), Gid::from_raw(0), Gid::from_raw(0))
-            .expect("setresgid(0)");
-        nix::unistd::setresuid(Uid::from_raw(0), Uid::from_raw(0), Uid::from_raw(0))
-            .expect("setresuid(0)");
+        nix::unistd::setresgid(Gid::from_raw(0), Gid::from_raw(0), Gid::from_raw(0)).expect("setresgid(0)");
+        nix::unistd::setresuid(Uid::from_raw(0), Uid::from_raw(0), Uid::from_raw(0)).expect("setresuid(0)");
 
         let pid = nix::unistd::getpid();
         let uid = nix::unistd::getuid();
@@ -112,18 +107,9 @@ fn child_is_isolated_and_uid_is_remapped() {
     // The child is still alive and blocked on `hold_read` at this point,
     // so its namespace references and real credentials are still valid to
     // inspect from the host.
-    let host_status =
-        fs::read_to_string(format!("/proc/{child_pid}/status")).expect("read child status");
-    let host_uid_line = host_status
-        .lines()
-        .find(|l| l.starts_with("Uid:"))
-        .expect("Uid: line");
-    let host_real_uid: u32 = host_uid_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
+    let host_status = fs::read_to_string(format!("/proc/{child_pid}/status")).expect("read child status");
+    let host_uid_line = host_status.lines().find(|l| l.starts_with("Uid:")).expect("Uid: line");
+    let host_real_uid: u32 = host_uid_line.split_whitespace().nth(1).unwrap().parse().unwrap();
 
     // Every requested namespace must differ from the test process's own.
     let mut ns_mismatches = Vec::new();
@@ -158,10 +144,7 @@ fn child_is_isolated_and_uid_is_remapped() {
     // ...but the host sees an unprivileged, dedicated id - never literal
     // root. This is the actual security property user namespace remapping
     // buys.
-    assert_eq!(
-        host_real_uid, REMAPPED_HOST_ID,
-        "host must see the remapped id, never uid 0"
-    );
+    assert_eq!(host_real_uid, REMAPPED_HOST_ID, "host must see the remapped id, never uid 0");
     assert_ne!(host_real_uid, 0);
 }
 

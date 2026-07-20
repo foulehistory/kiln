@@ -260,8 +260,7 @@ where
     // shared or aliased between parent and child after the syscall
     // returns, so it is safe for the parent to let `stack` and the boxed
     // closure go out of scope immediately after.
-    let child_pid = unsafe { nix::sched::clone(cb, &mut stack, flags, Some(libc::SIGCHLD)) }
-        .map_err(error::syscall("clone"))?;
+    let child_pid = unsafe { nix::sched::clone(cb, &mut stack, flags, Some(libc::SIGCHLD)) }.map_err(error::syscall("clone"))?;
 
     // Parent's own copy of the read end is never used; close it so the
     // pipe has exactly one reader (the child) and one writer (us).
@@ -276,10 +275,7 @@ where
         }
     }
 
-    Ok(PendingChild {
-        pid: child_pid,
-        write_end,
-    })
+    Ok(PendingChild { pid: child_pid, write_end })
 }
 
 /// Create a new process isolated according to `opts`, run `child_fn`
