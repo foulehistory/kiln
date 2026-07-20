@@ -27,14 +27,29 @@ fn backup_then_restore_round_trips_the_compose_file_and_volume_contents_without_
 
     let bin = env!("CARGO_BIN_EXE_kiln-compose");
     let backup_output = Command::new(bin)
-        .args(["--store", source_store_dir.path().to_str().unwrap(), "-f", "kiln.yaml", "-p", "backuptest", "backup"])
+        .args([
+            "--store",
+            source_store_dir.path().to_str().unwrap(),
+            "-f",
+            "kiln.yaml",
+            "-p",
+            "backuptest",
+            "backup",
+        ])
         .current_dir(project_dir.path())
         .output()
         .expect("spawn kiln-compose backup");
-    assert!(backup_output.status.success(), "backup failed: {}", String::from_utf8_lossy(&backup_output.stderr));
+    assert!(
+        backup_output.status.success(),
+        "backup failed: {}",
+        String::from_utf8_lossy(&backup_output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&backup_output.stdout);
-    assert!(stdout.contains("webtoken"), "backup should list the referenced secret name in its output: {stdout}");
+    assert!(
+        stdout.contains("webtoken"),
+        "backup should list the referenced secret name in its output: {stdout}"
+    );
 
     let archive_path = std::fs::read_dir(project_dir.path())
         .unwrap()
@@ -55,7 +70,11 @@ fn backup_then_restore_round_trips_the_compose_file_and_volume_contents_without_
         .args(["--dest", restore_dir.path().to_str().unwrap()])
         .output()
         .expect("spawn kiln-compose restore");
-    assert!(restore_output.status.success(), "restore failed: {}", String::from_utf8_lossy(&restore_output.stderr));
+    assert!(
+        restore_output.status.success(),
+        "restore failed: {}",
+        String::from_utf8_lossy(&restore_output.stderr)
+    );
 
     let restore_stdout = String::from_utf8_lossy(&restore_output.stdout);
     assert!(
@@ -80,5 +99,9 @@ fn backup_then_restore_round_trips_the_compose_file_and_volume_contents_without_
         .unwrap()
         .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(entry_names, vec!["manifest.json", "kiln.yaml", "volumes/webdata.tar.gz"], "archive should contain exactly these three entries - nothing secret-shaped");
+    assert_eq!(
+        entry_names,
+        vec!["manifest.json", "kiln.yaml", "volumes/webdata.tar.gz"],
+        "archive should contain exactly these three entries - nothing secret-shaped"
+    );
 }

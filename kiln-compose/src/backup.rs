@@ -35,7 +35,10 @@ struct Manifest {
 }
 
 pub fn backup(store: &Store, project: &str, compose_file: &Path, compose: &ComposeFile, output: Option<PathBuf>) -> CliResult {
-    let compose_file_name = compose_file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "kiln.yaml".to_string());
+    let compose_file_name = compose_file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "kiln.yaml".to_string());
     let compose_source = std::fs::read(compose_file).map_err(|e| CliError::msg(format!("reading {}: {e}", compose_file.display())))?;
 
     let volumes: Vec<String> = compose.volumes.keys().cloned().collect();
@@ -43,7 +46,10 @@ pub fn backup(store: &Store, project: &str, compose_file: &Path, compose: &Compo
 
     let manifest = Manifest {
         project: project.to_string(),
-        created_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         kiln_version: env!("CARGO_PKG_VERSION").to_string(),
         compose_file_name,
         volumes: volumes.clone(),
@@ -61,7 +67,9 @@ pub fn backup(store: &Store, project: &str, compose_file: &Path, compose: &Compo
         let bytes = volume::export_bytes(store, name).map_err(|e| CliError::msg(format!("exporting volume {name}: {e}")))?;
         append_bytes(&mut builder, &format!("volumes/{name}.tar.gz"), &bytes)?;
     }
-    builder.into_inner().map_err(|e| CliError::msg(format!("writing {}: {e}", output.display())))?;
+    builder
+        .into_inner()
+        .map_err(|e| CliError::msg(format!("writing {}: {e}", output.display())))?;
 
     println!("Backed up {} volume(s) to {}", volumes.len(), output.display());
     if !manifest.secrets.is_empty() {
@@ -79,7 +87,9 @@ fn append_bytes<W: std::io::Write>(builder: &mut tar::Builder<W>, path: &str, da
     header.set_mode(0o644);
     header.set_size(data.len() as u64);
     header.set_cksum();
-    builder.append_data(&mut header, path, data).map_err(|e| CliError::msg(format!("writing {path} into archive: {e}")))
+    builder
+        .append_data(&mut header, path, data)
+        .map_err(|e| CliError::msg(format!("writing {path} into archive: {e}")))
 }
 
 pub fn restore(store: &Store, archive_path: &Path, dest: Option<PathBuf>) -> CliResult {
@@ -89,13 +99,19 @@ pub fn restore(store: &Store, archive_path: &Path, dest: Option<PathBuf>) -> Cli
     let manifest = read_manifest(archive_path)?;
     let compose_dest = dest.join(&manifest.compose_file_name);
     if compose_dest.exists() {
-        return Err(CliError::msg(format!("{} already exists - move it aside before restoring", compose_dest.display())));
+        return Err(CliError::msg(format!(
+            "{} already exists - move it aside before restoring",
+            compose_dest.display()
+        )));
     }
 
     let file = std::fs::File::open(archive_path).map_err(|e| CliError::msg(format!("opening {}: {e}", archive_path.display())))?;
     let mut archive = tar::Archive::new(file);
     let mut restored_volumes = Vec::new();
-    for entry in archive.entries().map_err(|e| CliError::msg(format!("reading {}: {e}", archive_path.display())))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| CliError::msg(format!("reading {}: {e}", archive_path.display())))?
+    {
         let mut entry = entry.map_err(|e| CliError::msg(format!("{e}")))?;
         let entry_path = entry.path().map_err(|e| CliError::msg(format!("{e}")))?.into_owned();
         let entry_path_str = entry_path.to_string_lossy().into_owned();
@@ -128,7 +144,10 @@ pub fn restore(store: &Store, archive_path: &Path, dest: Option<PathBuf>) -> Cli
 fn read_manifest(archive_path: &Path) -> CliResult<Manifest> {
     let file = std::fs::File::open(archive_path).map_err(|e| CliError::msg(format!("opening {}: {e}", archive_path.display())))?;
     let mut archive = tar::Archive::new(file);
-    for entry in archive.entries().map_err(|e| CliError::msg(format!("reading {}: {e}", archive_path.display())))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| CliError::msg(format!("reading {}: {e}", archive_path.display())))?
+    {
         let mut entry = entry.map_err(|e| CliError::msg(format!("{e}")))?;
         let path = entry.path().map_err(|e| CliError::msg(format!("{e}")))?.into_owned();
         if path.to_string_lossy() == "manifest.json" {

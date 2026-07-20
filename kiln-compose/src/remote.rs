@@ -73,7 +73,8 @@ pub fn create_container(node: &Node, args: RunArgs) -> CliResult<RemoteContainer
         .set("Authorization", &format!("Bearer {}", node.token))
         .send_json(serde_json::to_value(&body).map_err(|e| CliError::msg(e.to_string()))?)
         .map_err(|e| CliError::msg(format!("creating {} on node {}: {e}", args.name, node.name)))?;
-    resp.into_json().map_err(|e| CliError::msg(format!("parsing response from node {}: {e}", node.name)))
+    resp.into_json()
+        .map_err(|e| CliError::msg(format!("parsing response from node {}: {e}", node.name)))
 }
 
 /// `None` on any failure (unreachable node, container doesn't exist,

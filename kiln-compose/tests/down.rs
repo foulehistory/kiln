@@ -63,8 +63,18 @@ fn down_removes_the_project_network_it_created() {
     assert!(bridge_exists(&bridge), "sanity check: the bridge should exist right after `up`");
 
     let down_output = run(&["down"]);
-    assert!(down_output.status.success(), "down failed: {}", String::from_utf8_lossy(&down_output.stderr));
+    assert!(
+        down_output.status.success(),
+        "down failed: {}",
+        String::from_utf8_lossy(&down_output.stderr)
+    );
 
-    assert!(NetworkConfig::load(store.root(), "downtest_default").is_none(), "down should remove the network's stored config");
-    assert!(!bridge_exists(&bridge), "down should remove the bridge device itself, not just the config file");
+    assert!(
+        NetworkConfig::load(store.root(), "downtest_default").is_none(),
+        "down should remove the network's stored config"
+    );
+    assert!(
+        !bridge_exists(&bridge),
+        "down should remove the bridge device itself, not just the config file"
+    );
 }

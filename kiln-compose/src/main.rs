@@ -170,7 +170,9 @@ fn project_name(explicit: Option<String>, file: &Path) -> String {
         dir.and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "kiln".to_string())
     });
-    raw.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
+    raw.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect()
 }
 
 fn pick_subnet(project: &str) -> String {
@@ -199,8 +201,7 @@ fn resolve_service_image(store: &Store, project: &str, context_dir: &Path, name:
         let kilnfile_path = build_ctx.join("Kilnfile");
         let source = std::fs::read_to_string(&kilnfile_path)
             .map_err(|e| CliError::msg(format!("service {name}: reading {}: {e}", kilnfile_path.display())))?;
-        let output =
-            kiln_image::build::build(store, &build_ctx, &source).map_err(|e| CliError::msg(format!("service {name}: build failed: {e}")))?;
+        let output = kiln_image::build::build(store, &build_ctx, &source).map_err(|e| CliError::msg(format!("service {name}: build failed: {e}")))?;
         let repo = normalize_repository(&format!("{project}_{name}"));
         store.tag(&repo, "latest", output.image_id)?;
         Ok(format!("{repo}:latest"))
@@ -230,7 +231,13 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
 
     let network_name = format!("{project}_default");
     if NetworkConfig::load(store.root(), &network_name).is_none() {
-        network::run(store, network::Command::Create { name: network_name.clone(), subnet: pick_subnet(project) })?;
+        network::run(
+            store,
+            network::Command::Create {
+                name: network_name.clone(),
+                subnet: pick_subnet(project),
+            },
+        )?;
     }
 
     let order = compose::dependency_order(&compose.services).map_err(CliError::msg)?;
@@ -435,7 +442,14 @@ fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
                     Status::Exited(code) => format!("exited({code})"),
                 };
                 let pid = c.pid.map(|p| p.to_string()).unwrap_or_default();
-                println!("{:<20}{:<14}{:<14}{:<8}{}", name, &c.id[..12.min(c.id.len())], status, pid, c.command.join(" "));
+                println!(
+                    "{:<20}{:<14}{:<14}{:<8}{}",
+                    name,
+                    &c.id[..12.min(c.id.len())],
+                    status,
+                    pid,
+                    c.command.join(" ")
+                );
             }
             None => println!("{:<20}{:<14}{:<14}{:<8}", name, "-", "not created", ""),
         }
@@ -563,4 +577,3 @@ fn stream_aggregated_logs(store: &Store, containers: &[Container], own_container
     }
     Ok(())
 }
-

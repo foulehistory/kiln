@@ -113,8 +113,7 @@ pub fn dependency_order(services: &BTreeMap<String, Service>) -> Result<Vec<Stri
         }
     }
 
-    let mut remaining: BTreeMap<&String, usize> =
-        services.iter().map(|(name, svc)| (name, svc.depends_on.len())).collect();
+    let mut remaining: BTreeMap<&String, usize> = services.iter().map(|(name, svc)| (name, svc.depends_on.len())).collect();
     let mut order = Vec::with_capacity(services.len());
 
     loop {
