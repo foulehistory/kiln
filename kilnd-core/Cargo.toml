@@ -1,6 +1,6 @@
 [package]
 name = "kilnd-core"
-version = "0.1.28"
+version = "0.1.29"
 edition = "2021"
 description = "Low-level Linux container runtime primitives for Kiln (namespaces, cgroups v2, overlayfs)."
 license = "Apache-2.0"

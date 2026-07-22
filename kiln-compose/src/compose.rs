@@ -75,6 +75,93 @@ pub struct Service {
     /// `kiln run --cap-drop`, checked after `cap_add`.
     #[serde(default)]
     pub cap_drop: Vec<String>,
+    /// `"no"` (default if omitted), `"always"`, or `"on-failure"` - same
+    /// syntax as `kiln run --restart`. See `kiln_cli::container::RestartPolicy`.
+    #[serde(default)]
+    pub restart: Option<String>,
+    /// Docker Compose-shaped `healthcheck:` block - see `Healthcheck::into_spec`.
+    #[serde(default)]
+    pub healthcheck: Option<Healthcheck>,
+}
+
+/// `healthcheck:` in `kiln.yaml` - deliberately just the Compose fields
+/// that map onto `kiln_cli::container::HealthCheckSpec`; no `start_period`
+/// (nothing here defers when `retries` starts counting).
+#[derive(Debug, Deserialize, Clone)]
+pub struct Healthcheck {
+    pub test: HealthcheckTest,
+    #[serde(default)]
+    pub interval: Option<String>,
+    #[serde(default)]
+    pub timeout: Option<String>,
+    #[serde(default)]
+    pub retries: Option<u32>,
+}
+
+/// Accepts Compose's `["CMD", ...]`/`["CMD-SHELL", "..."]`/bare-array
+/// forms, or a bare shell string (Compose's implicit `CMD-SHELL`).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum HealthcheckTest {
+    Shell(String),
+    Exec(Vec<String>),
+}
+
+impl Healthcheck {
+    pub fn into_spec(self) -> Result<kiln_cli::container::HealthCheckSpec, String> {
+        let test = match self.test {
+            HealthcheckTest::Shell(s) => vec!["/bin/sh".to_string(), "-c".to_string(), s],
+            HealthcheckTest::Exec(v) => match v.first().map(String::as_str) {
+                Some("CMD-SHELL") => vec!["/bin/sh".to_string(), "-c".to_string(), v.get(1).cloned().unwrap_or_default()],
+                Some("CMD") => v[1..].to_vec(),
+                _ => v,
+            },
+        };
+        if test.is_empty() {
+            return Err("healthcheck.test must not be empty".to_string());
+        }
+        Ok(kiln_cli::container::HealthCheckSpec {
+            test,
+            interval_secs: self
+                .interval
+                .as_deref()
+                .map(parse_duration_secs)
+                .transpose()?
+                .unwrap_or(kiln_cli::container::HealthCheckSpec::DEFAULT_INTERVAL_SECS),
+            timeout_secs: self
+                .timeout
+                .as_deref()
+                .map(parse_duration_secs)
+                .transpose()?
+                .unwrap_or(kiln_cli::container::HealthCheckSpec::DEFAULT_TIMEOUT_SECS),
+            retries: self.retries.unwrap_or(kiln_cli::container::HealthCheckSpec::DEFAULT_RETRIES),
+        })
+    }
+}
+
+/// Parses a Compose-style single-unit duration (`10s`, `2m`, `1h`, or a
+/// bare integer meaning seconds). Deliberately not the full Go duration
+/// grammar Compose itself accepts - no compound units (`1m30s`) and no
+/// sub-second precision (`500ms`); good enough for a healthcheck
+/// interval/timeout, not meant to be a general parser.
+pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if s.ends_with("ms") {
+        return Err(format!(
+            "invalid duration {s:?}: sub-second (ms) durations aren't supported, use whole seconds"
+        ));
+    }
+    let (digits, mult) = match s.chars().last() {
+        Some('s') => (&s[..s.len() - 1], 1u64),
+        Some('m') => (&s[..s.len() - 1], 60u64),
+        Some('h') => (&s[..s.len() - 1], 3600u64),
+        _ => (s, 1u64),
+    };
+    digits
+        .trim()
+        .parse::<u64>()
+        .map(|n| n * mult)
+        .map_err(|_| format!("invalid duration {s:?}: expected e.g. 10s, 2m, 1h, or a plain second count"))
 }
 
 /// Accepts either Compose's shell-string form (`command: "echo hi"`) or

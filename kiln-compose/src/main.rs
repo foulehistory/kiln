@@ -32,7 +32,7 @@ mod compose;
 mod remote;
 
 use clap::{Parser, Subcommand};
-use compose::{ComposeFile, Service};
+use compose::{ComposeFile, Healthcheck, Service};
 use kiln_cli::commands::network::{self, NetworkConfig};
 use kiln_cli::commands::run::{start, RunSpec};
 use kiln_cli::commands::volume;
@@ -330,6 +330,7 @@ fn dispatch_remote_service(
             cap_add: svc.cap_add.clone(),
             cap_drop: svc.cap_drop.clone(),
         },
+        healthcheck: svc.healthcheck.clone().map(Healthcheck::into_spec).transpose().map_err(CliError::msg)?,
     };
     let container = remote::create_container(node, args)?;
     println!("  {name}: {} on {node_name}", &container.id[..12.min(container.id.len())]);
@@ -506,6 +507,14 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
             cap_add: svc.cap_add.clone(),
             cap_drop: svc.cap_drop.clone(),
         };
+        spec.restart_policy = svc
+            .restart
+            .as_deref()
+            .map(kiln_cli::container::RestartPolicy::parse)
+            .transpose()
+            .map_err(CliError::msg)?
+            .unwrap_or_default();
+        spec.healthcheck = svc.healthcheck.clone().map(Healthcheck::into_spec).transpose().map_err(CliError::msg)?;
 
         println!("Starting {name}...");
         let container = start(store, spec, None).map_err(|e| CliError::msg(format!("service {name}: {e}")))?;
@@ -592,15 +601,32 @@ fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
 }
 
 fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
-    println!("{:<20}{:<14}{:<14}{:<8}COMMAND", "SERVICE", "CONTAINER ID", "STATUS", "PID");
+    println!(
+        "{:<20}{:<14}{:<14}{:<11}{:<8}COMMAND",
+        "SERVICE", "CONTAINER ID", "STATUS", "HEALTH", "PID"
+    );
     for (name, svc) in &compose.services {
         let container_name = format!("{project}_{name}");
 
         if let Some(node_name) = &svc.node {
             let found = kiln_cli::commands::node::find_node(store, node_name).and_then(|node| remote::get_container(&node, &container_name));
             match found {
-                Some(c) => println!("{:<20}{:<14}{:<14}{:<8}(on {node_name})", name, &c.id[..12.min(c.id.len())], c.status, ""),
-                None => println!("{:<20}{:<14}{:<14}{:<8}", name, "-", format!("not created (on {node_name})"), ""),
+                Some(c) => println!(
+                    "{:<20}{:<14}{:<14}{:<11}{:<8}(on {node_name})",
+                    name,
+                    &c.id[..12.min(c.id.len())],
+                    c.status,
+                    c.health,
+                    ""
+                ),
+                None => println!(
+                    "{:<20}{:<14}{:<14}{:<11}{:<8}",
+                    name,
+                    "-",
+                    format!("not created (on {node_name})"),
+                    "",
+                    ""
+                ),
             }
             continue;
         }
@@ -612,17 +638,19 @@ fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
                     Status::Running => "running".to_string(),
                     Status::Exited(code) => format!("exited({code})"),
                 };
+                let health = if c.healthcheck.is_some() { c.health.as_str() } else { "-" };
                 let pid = c.pid.map(|p| p.to_string()).unwrap_or_default();
                 println!(
-                    "{:<20}{:<14}{:<14}{:<8}{}",
+                    "{:<20}{:<14}{:<14}{:<11}{:<8}{}",
                     name,
                     &c.id[..12.min(c.id.len())],
                     status,
+                    health,
                     pid,
                     c.command.join(" ")
                 );
             }
-            None => println!("{:<20}{:<14}{:<14}{:<8}", name, "-", "not created", ""),
+            None => println!("{:<20}{:<14}{:<14}{:<11}{:<8}", name, "-", "not created", "", ""),
         }
     }
     Ok(())

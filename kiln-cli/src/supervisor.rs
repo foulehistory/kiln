@@ -19,12 +19,25 @@
 //! container it supervises, so "daemonless" still holds: there is nothing
 //! left running when no containers are.
 
-use crate::container::{Container, Status};
+use crate::container::{now_unix, Container, Status};
 use crate::error::{CliError, CliResult};
 use kiln_image::store::Store;
 use kilnd_core::namespaces::{spawn_paused, Spawn};
 use nix::unistd::{fork, pipe, ForkResult};
 use std::os::fd::AsRawFd;
+
+/// How long a container must run before a subsequent crash is treated as
+/// a *new* crash loop rather than a continuation of the current one -
+/// see the backoff reset in the exit-handling block below.
+const STABLE_UPTIME_SECS: u64 = 10;
+
+/// `min(60, 2^restart_count)` seconds - 1s, 2s, 4s, ... up to a 60s cap.
+/// Crude but effective: enough to stop a persistently-crashing container
+/// from spinning as fast as the kernel can fork, without needing a full
+/// token-bucket rate limiter for what's still a fairly narrow use case.
+fn backoff_delay_secs(restart_count: u32) -> u64 {
+    1u64.checked_shl(restart_count.min(6)).unwrap_or(64).min(60)
+}
 
 /// Start `container` (whose `pid`/`status` are not yet set) detached,
 /// returning it once its supervisor confirms it actually started (with
@@ -121,6 +134,8 @@ where
                             Ok(()) => {
                                 container.pid = Some(pid.as_raw());
                                 container.status = Status::Running;
+                                container.last_started_at = Some(now_unix());
+                                container.health = crate::container::HealthStatus::Starting;
                                 if let Some((network, ip)) = net_ip {
                                     container.network = Some(network);
                                     container.ip = Some(ip);
@@ -149,6 +164,23 @@ where
             }
 
             let pid = nix::unistd::Pid::from_raw(container.pid.expect("set above"));
+
+            // Runs alongside this thread's own `waitpid` below, for as
+            // long as the container is `Running` - see
+            // `crate::healthcheck::run_loop`'s own docs. No handle is
+            // kept: the thread notices on its own once the container's
+            // persisted status stops being `Running` and returns.
+            if let Some(hc) = container.healthcheck.clone() {
+                let store_root = store.root().to_path_buf();
+                let id = container.id.clone();
+                let raw_pid = pid.as_raw();
+                std::thread::spawn(move || {
+                    if let Ok(hc_store) = Store::open(&store_root) {
+                        crate::healthcheck::run_loop(&hc_store, &id, raw_pid, hc);
+                    }
+                });
+            }
+
             let exit_code = match nix::sys::wait::waitpid(pid, None) {
                 Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => code,
                 Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
@@ -156,10 +188,20 @@ where
             };
 
             let mut restart_policy = container.restart_policy;
+            let mut restart_count = container.restart_count;
             if let Some(mut c) = Container::load(store, &container.id) {
                 c.status = Status::Exited(exit_code);
+                // A run that lasted long enough is treated as stable: the
+                // next crash (if any) starts a fresh backoff sequence
+                // instead of continuing to back off as if this were still
+                // the same crash loop from a while ago.
+                let uptime = c.last_started_at.map(|t| now_unix().saturating_sub(t)).unwrap_or(0);
+                if uptime >= STABLE_UPTIME_SECS {
+                    c.restart_count = 0;
+                }
                 let _ = c.save(store);
                 restart_policy = c.restart_policy;
+                restart_count = c.restart_count;
             }
 
             // `--restart always`/`on-failure`: rather than looping inside
@@ -169,13 +211,16 @@ where
             // own new detached supervisor that outlives this one. This
             // process still exits normally right after, so there's never
             // a moment with two supervisors both watching the same
-            // container. A flat one-second delay is a deliberately crude
-            // crash-loop guard (no backoff/retry-count tracking yet) -
-            // good enough to keep a persistently-crashing container from
-            // spinning as fast as the kernel can fork, not a polished
-            // rate limiter.
+            // container. The delay backs off exponentially with
+            // `restart_count` (see `backoff_delay_secs`) rather than a
+            // flat retry interval, to keep a persistently-crashing
+            // container from spinning as fast as the kernel can fork.
             if restart_policy.should_restart(exit_code) {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(std::time::Duration::from_secs(backoff_delay_secs(restart_count)));
+                if let Some(mut c) = Container::load(store, &container.id) {
+                    c.restart_count = c.restart_count.saturating_add(1);
+                    let _ = c.save(store);
+                }
                 if let Err(e) = crate::commands::run::restart(store, &container.id) {
                     eprintln!("kiln: restart policy: relaunching {}: {e}", container.id);
                 }

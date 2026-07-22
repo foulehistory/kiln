@@ -63,6 +63,10 @@ fn stop_falls_back_to_sigkill_when_sigterm_is_ignored() {
         restart_policy: kiln_cli::container::RestartPolicy::No,
         secrets: Vec::new(),
         security: kilnd_core::security::SecurityProfile::default(),
+        healthcheck: None,
+        health: kiln_cli::container::HealthStatus::Starting,
+        restart_count: 0,
+        last_started_at: None,
     };
     container.save(&store).expect("save container state");
 

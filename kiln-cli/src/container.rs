@@ -48,6 +48,57 @@ impl RestartPolicy {
     }
 }
 
+/// `--health-cmd`/`--health-interval`/`--health-timeout`/`--health-retries`,
+/// or `healthcheck:` in `kiln.yaml` - persisted on [`Container`] (like
+/// `restart_policy`) so `kiln start`/the restart-policy path in
+/// `supervisor.rs` keep probing the same command after a restart, not
+/// just on the run that first specified it. Probing itself is done by
+/// `crate::healthcheck::run_loop`, on a background thread the supervisor
+/// spawns alongside its own `waitpid`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthCheckSpec {
+    /// Exec-array form only (`["curl", "-f", "http://localhost/"]`) -
+    /// `kiln-compose`'s `healthcheck.test` expands Compose's `CMD`/
+    /// `CMD-SHELL`/bare-string forms down to this before it reaches here.
+    pub test: Vec<String>,
+    pub interval_secs: u64,
+    pub timeout_secs: u64,
+    /// Consecutive failures required before `health` flips to
+    /// `Unhealthy` - a single blip leaves the last-known status alone,
+    /// matching Docker's own `retries` semantics.
+    pub retries: u32,
+}
+
+impl HealthCheckSpec {
+    pub const DEFAULT_INTERVAL_SECS: u64 = 30;
+    pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
+    pub const DEFAULT_RETRIES: u32 = 3;
+}
+
+/// Health status as reported by the healthcheck probe loop - independent
+/// of `Status` (running/exited): a container can be `Running` and
+/// `Unhealthy` at the same time. `Starting` is the state for the entire
+/// time no probe has yet completed (including containers with no
+/// `healthcheck` configured at all - there's simply never anything to
+/// transition it away from `Starting` in that case).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum HealthStatus {
+    #[default]
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+impl HealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HealthStatus::Starting => "starting",
+            HealthStatus::Healthy => "healthy",
+            HealthStatus::Unhealthy => "unhealthy",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Container {
     pub id: String,
@@ -110,6 +161,29 @@ pub struct Container {
     /// `kilnd_core::security::SecurityProfile`'s own docs.
     #[serde(default)]
     pub security: kilnd_core::security::SecurityProfile,
+    /// The healthcheck command this container was started with, if any -
+    /// same restart-fidelity role as `security`/`secrets` above.
+    #[serde(default)]
+    pub healthcheck: Option<HealthCheckSpec>,
+    /// Last-probed health status - see [`HealthStatus`]. Reset to
+    /// `Starting` every time this container (re)starts, updated by
+    /// `crate::healthcheck::run_loop` from then on.
+    #[serde(default)]
+    pub health: HealthStatus,
+    /// Consecutive automatic restarts since the last time this container
+    /// ran long enough to be considered stable - drives the exponential
+    /// backoff in `supervisor.rs`. Not part of `RunSpec`: this is
+    /// supervisor-owned bookkeeping, never something a caller sets
+    /// directly, only read/incremented across a restart-policy-triggered
+    /// relaunch.
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Unix timestamp of the most recent successful start - used to
+    /// decide whether a crash counts as part of an ongoing crash loop
+    /// (reset `restart_count`) or a fresh one. Supervisor-owned, like
+    /// `restart_count`.
+    #[serde(default)]
+    pub last_started_at: Option<u64>,
 }
 
 impl Container {

@@ -7,6 +7,7 @@ pub mod cgroup;
 pub mod commands;
 pub mod container;
 pub mod error;
+pub mod healthcheck;
 pub mod supervisor;
 
 use std::path::PathBuf;

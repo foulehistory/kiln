@@ -18,19 +18,24 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         containers.retain(|c| c.status == Status::Running);
     }
 
-    println!("{:<14}{:<20}{:<12}{:<10}{:<20}COMMAND", "CONTAINER ID", "IMAGE", "STATUS", "PID", "NAME");
+    println!(
+        "{:<14}{:<20}{:<12}{:<11}{:<10}{:<20}COMMAND",
+        "CONTAINER ID", "IMAGE", "STATUS", "HEALTH", "PID", "NAME"
+    );
     for c in &containers {
         let status = match c.status {
             Status::Running => "running".to_string(),
             Status::Exited(code) => format!("exited({code})"),
         };
+        let health = if c.healthcheck.is_some() { c.health.as_str() } else { "-" };
         let pid = c.pid.map(|p| p.to_string()).unwrap_or_default();
         let cmd = c.command.join(" ");
         println!(
-            "{:<14}{:<20}{:<12}{:<10}{:<20}{}",
+            "{:<14}{:<20}{:<12}{:<11}{:<10}{:<20}{}",
             &c.id[..12.min(c.id.len())],
             truncate(&c.image_reference, 18),
             status,
+            health,
             pid,
             truncate(&c.name, 18),
             truncate(&cmd, 40),

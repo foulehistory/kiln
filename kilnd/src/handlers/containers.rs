@@ -24,6 +24,12 @@ pub struct ContainerJson {
     /// e.g. for a "near its memory limit" alert.
     pub memory_limit_bytes: Option<u64>,
     pub cpu_limit: Option<f64>,
+    /// `"none"` if this container has no `healthcheck:` configured,
+    /// otherwise `"starting"`/`"healthy"`/`"unhealthy"` - see
+    /// `kiln_cli::container::HealthStatus`. A plain sentinel string
+    /// rather than `Option<String>` keeps clients (dashboard,
+    /// `kiln-compose ps`) from having to special-case JSON null here.
+    pub health: String,
 }
 
 fn to_json(mut c: Container, store: &Store) -> ContainerJson {
@@ -31,6 +37,11 @@ fn to_json(mut c: Container, store: &Store) -> ContainerJson {
     let status = match c.status {
         Status::Running => "running".to_string(),
         Status::Exited(code) => format!("exited({code})"),
+    };
+    let health = if c.healthcheck.is_some() {
+        c.health.as_str().to_string()
+    } else {
+        "none".to_string()
     };
     ContainerJson {
         id: c.id,
@@ -44,6 +55,7 @@ fn to_json(mut c: Container, store: &Store) -> ContainerJson {
         created_at: c.created_at,
         memory_limit_bytes: c.memory_limit_bytes,
         cpu_limit: c.cpu_limit,
+        health,
     }
 }
 
@@ -169,6 +181,12 @@ pub struct RunRequest {
     /// discovery, see its own module docs).
     #[serde(default)]
     pub extra_hosts: Vec<(String, String)>,
+    /// Health probe command, if any - see
+    /// `kiln_cli::container::HealthCheckSpec`. `kiln-compose`'s remote
+    /// dispatch is the only caller that populates this today (a
+    /// `node:`-tagged service's own `healthcheck:`).
+    #[serde(default)]
+    pub healthcheck: Option<kiln_cli::container::HealthCheckSpec>,
 }
 
 pub fn create(store: &Store, req: &Request) -> Response {
@@ -197,6 +215,7 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.ports = body.ports;
     spec.secrets = body.secrets;
     spec.extra_hosts = body.extra_hosts;
+    spec.healthcheck = body.healthcheck;
     spec.security = kilnd_core::security::SecurityProfile {
         seccomp_unconfined: body.seccomp_unconfined,
         cap_add: body.cap_add,

@@ -29,12 +29,18 @@ struct RunRequest {
     cap_drop: Vec<String>,
     #[serde(default)]
     extra_hosts: Vec<(String, String)>,
+    #[serde(default)]
+    healthcheck: Option<kiln_cli::container::HealthCheckSpec>,
 }
 
 #[derive(Deserialize, Clone)]
 pub struct RemoteContainer {
     pub id: String,
     pub status: String,
+    /// `"none"`/`"starting"`/`"healthy"`/`"unhealthy"` - see `kilnd`'s
+    /// own `ContainerJson::health` docs.
+    #[serde(default)]
+    pub health: String,
 }
 
 fn url(node: &Node, path: &str) -> String {
@@ -52,6 +58,7 @@ pub struct RunArgs {
     pub secrets: Vec<String>,
     pub extra_hosts: Vec<(String, String)>,
     pub security: kilnd_core::security::SecurityProfile,
+    pub healthcheck: Option<kiln_cli::container::HealthCheckSpec>,
 }
 
 /// Creates a container on `node` - the remote-dispatch equivalent of
@@ -72,6 +79,7 @@ pub fn create_container(node: &Node, args: RunArgs) -> CliResult<RemoteContainer
         seccomp_unconfined: args.security.seccomp_unconfined,
         cap_add: args.security.cap_add,
         cap_drop: args.security.cap_drop,
+        healthcheck: args.healthcheck,
     };
     let resp = ureq::post(&url(node, "/containers"))
         .set("Authorization", &format!("Bearer {}", node.token))

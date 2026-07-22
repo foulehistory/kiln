@@ -77,6 +77,25 @@ pub struct Args {
     #[arg(long, default_value = "no")]
     pub restart: String,
 
+    /// Command to run periodically to check container health, e.g.
+    /// `--health-cmd "curl -f http://localhost/"` (run via `/bin/sh -c`,
+    /// same as `kiln.yaml`'s `healthcheck.test` bare-string form). No
+    /// healthcheck is configured unless this is given.
+    #[arg(long = "health-cmd")]
+    pub health_cmd: Option<String>,
+
+    /// Seconds between health probes (default 30)
+    #[arg(long = "health-interval", default_value_t = crate::container::HealthCheckSpec::DEFAULT_INTERVAL_SECS)]
+    pub health_interval: u64,
+
+    /// Seconds before a health probe is considered timed out (default 5)
+    #[arg(long = "health-timeout", default_value_t = crate::container::HealthCheckSpec::DEFAULT_TIMEOUT_SECS)]
+    pub health_timeout: u64,
+
+    /// Consecutive failures before the container is reported unhealthy (default 3)
+    #[arg(long = "health-retries", default_value_t = crate::container::HealthCheckSpec::DEFAULT_RETRIES)]
+    pub health_retries: u32,
+
     /// Disable the default seccomp filter for this container - only
     /// `seccomp=unconfined` is accepted (matches Docker's own
     /// `--security-opt` flag name/value for muscle-memory familiarity;
@@ -142,6 +161,13 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         }
     };
 
+    let healthcheck = args.health_cmd.map(|cmd| crate::container::HealthCheckSpec {
+        test: vec!["/bin/sh".to_string(), "-c".to_string(), cmd],
+        interval_secs: args.health_interval,
+        timeout_secs: args.health_timeout,
+        retries: args.health_retries,
+    });
+
     let spec = RunSpec {
         image: args.image,
         command: args.command,
@@ -160,6 +186,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
             cap_add: args.cap_add,
             cap_drop: args.cap_drop,
         },
+        healthcheck,
     };
 
     let container = start(store, spec, None)?;
@@ -204,6 +231,10 @@ pub struct RunSpec {
     /// is the full restricted profile every container gets unless a
     /// caller explicitly widens it. See `kilnd_core::security`'s own docs.
     pub security: kilnd_core::security::SecurityProfile,
+    /// Command to probe container health with, if any - see
+    /// `crate::container::HealthCheckSpec`. Restart-fidelity field, same
+    /// role as `security`/`secrets` above.
+    pub healthcheck: Option<crate::container::HealthCheckSpec>,
 }
 
 impl RunSpec {
@@ -222,6 +253,7 @@ impl RunSpec {
             restart_policy: crate::container::RestartPolicy::No,
             secrets: Vec::new(),
             security: kilnd_core::security::SecurityProfile::default(),
+            healthcheck: None,
         }
     }
 }
@@ -266,6 +298,13 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
     };
 
     let id = existing_id.unwrap_or_else(generate_id);
+    // Inherited rather than reset to 0 unconditionally: a restart-policy
+    // relaunch (`restart()` below) reuses this same id, and the whole
+    // point of `restart_count` is to survive across exactly that
+    // relaunch so `supervisor.rs`'s backoff keeps escalating through a
+    // crash loop instead of resetting on every attempt. A brand new id
+    // (plain `kiln run`) has no on-disk state yet, so this is just 0.
+    let restart_count = Container::load(store, &id).map(|c| c.restart_count).unwrap_or(0);
     let name = spec.name.unwrap_or_else(|| id[..12].to_string());
     let uid_base = identity::SUBORDINATE_UID_BASE;
     let gid_base = identity::SUBORDINATE_GID_BASE;
@@ -415,6 +454,10 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         restart_policy: spec.restart_policy,
         secrets: spec.secrets,
         security: spec.security,
+        healthcheck: spec.healthcheck,
+        health: crate::container::HealthStatus::Starting,
+        restart_count,
+        last_started_at: None,
     };
 
     // Created (unrestricted unless --memory/--cpus were given) before the
@@ -486,6 +529,7 @@ pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
         restart_policy: container.restart_policy,
         secrets: container.secrets.clone(),
         security: container.security.clone(),
+        healthcheck: container.healthcheck.clone(),
     };
     start(store, spec, Some(container.id.clone()))
 }
