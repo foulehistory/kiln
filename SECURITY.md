@@ -142,7 +142,21 @@ every request/response cross the wire in the clear.
 
 `kiln-compose`'s own dispatch to a `node:`-tagged service reuses
 exactly this same authenticated API — it does not add a second
-transport or trust mechanism.
+transport or trust mechanism. That now also includes triggering an
+image *pull* on the remote node (for `build:` + `node:` + `image:`
+services) and *stopping* a container there (`kiln-compose reschedule`,
+and Ctrl-C during a foreground `up`) — both already covered by "full
+access to that `kilnd`'s entire API" above, not new capabilities the
+token didn't already imply.
+
+Cross-host service discovery (a `node:`-tagged dependency resolving to
+its node's own host address via `/etc/hosts` - see `kiln-compose`'s own
+module docs) means a container can see which real network address
+another node lives at. Not a new disclosure in practice - reaching that
+dependency at all already requires knowing that address - but worth
+naming: an operator relying on nodes' addresses themselves being secret
+(rather than just the remote token) shouldn't put `node:`-tagged
+services under containers that shouldn't see that.
 
 ## Not yet done
 

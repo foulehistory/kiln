@@ -27,6 +27,8 @@ struct RunRequest {
     cap_add: Vec<String>,
     #[serde(default)]
     cap_drop: Vec<String>,
+    #[serde(default)]
+    extra_hosts: Vec<(String, String)>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -48,6 +50,7 @@ pub struct RunArgs {
     pub environment: Vec<(String, String)>,
     pub ports: Vec<String>,
     pub secrets: Vec<String>,
+    pub extra_hosts: Vec<(String, String)>,
     pub security: kilnd_core::security::SecurityProfile,
 }
 
@@ -65,6 +68,7 @@ pub fn create_container(node: &Node, args: RunArgs) -> CliResult<RemoteContainer
         environment: args.environment,
         ports: args.ports,
         secrets: args.secrets,
+        extra_hosts: args.extra_hosts,
         seccomp_unconfined: args.security.seccomp_unconfined,
         cap_add: args.security.cap_add,
         cap_drop: args.security.cap_drop,
@@ -90,6 +94,20 @@ pub fn get_container(node: &Node, name: &str) -> Option<RemoteContainer> {
         .ok()
 }
 
+/// Used by `stream_aggregated_logs`'s Ctrl-C handling for a foreground
+/// `kiln-compose up` - the remote-dispatch equivalent of sending SIGTERM
+/// to a local container's pid. Deliberately `stop`, not
+/// `remove_container` below: Ctrl-C on a foreground `up` should leave a
+/// remote service stoppable/inspectable afterward, the same as it does
+/// for a local one, not delete its state outright.
+pub fn stop_container(node: &Node, name: &str) -> Result<(), String> {
+    ureq::post(&url(node, &format!("/containers/{name}/stop")))
+        .set("Authorization", &format!("Bearer {}", node.token))
+        .call()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Best-effort, like `cmd_down`'s local removal loop (which also just
 /// `eprintln!`s and moves on rather than aborting the rest of `down`) -
 /// a container already gone on the remote node, or the node being
@@ -101,6 +119,22 @@ pub fn remove_container(node: &Node, name: &str) -> Result<(), String> {
         .call()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Pulls `reference` on `node` before creating a container from it - a
+/// node-tagged service's image only ever gets there this way (`kilnd`'s
+/// own `Image::resolve` never auto-pulls a missing local tag; see
+/// `kiln-image::image::Image::resolve`'s own logic). Needed for both a
+/// plain `image:` service (the node might just not have pulled it yet)
+/// and the `build:` + `node:` + `image:` combination `resolve_service_image`
+/// implements: the image only exists on this node's registry push, never
+/// automatically on the remote one.
+pub fn pull_image(node: &Node, reference: &str) -> CliResult<()> {
+    ureq::post(&url(node, "/images/pull"))
+        .set("Authorization", &format!("Bearer {}", node.token))
+        .send_json(serde_json::json!({ "reference": reference }))
+        .map_err(|e| CliError::msg(format!("pulling {reference} on node {}: {e}", node.name)))?;
+    Ok(())
 }
 
 /// Best-effort, idempotent network provisioning on `node` - mirrors
@@ -128,15 +162,28 @@ pub fn remove_network(node: &Node, name: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Non-follow only - unlike `stream_aggregated_logs`'s local tailing,
-/// following a remote node's logs would need its own long-lived
-/// connection/thread per node; deferred rather than half-implemented for
-/// this first pass (see this crate's own docs on the multi-host MVP's
-/// deliberately narrow scope).
 pub fn logs(node: &Node, name: &str) -> CliResult<String> {
     let resp = ureq::get(&url(node, &format!("/containers/{name}/logs")))
         .set("Authorization", &format!("Bearer {}", node.token))
         .call()
         .map_err(|e| CliError::msg(format!("fetching logs from node {}: {e}", node.name)))?;
     resp.into_string().map_err(|e| CliError::msg(e.to_string()))
+}
+
+/// Streams a remote container's logs as they're written - the
+/// `logs`/`-f` follow-mode equivalent of `logs` above, backed by
+/// `kilnd`'s existing `GET .../logs?follow=1` (already chunked-transfer
+/// streaming server-side for the dashboard's own live-tail feature; this
+/// just reuses it). A short read timeout on the underlying connection
+/// (rather than none) is what lets `stream_aggregated_logs`'s polling
+/// loop notice `STOP` and stop tailing promptly instead of blocking
+/// until the remote side writes more output or the container exits.
+pub fn logs_follow(node: &Node, name: &str) -> CliResult<Box<dyn std::io::Read + Send>> {
+    let agent = ureq::AgentBuilder::new().timeout_read(std::time::Duration::from_millis(500)).build();
+    let resp = agent
+        .get(&url(node, &format!("/containers/{name}/logs?follow=1")))
+        .set("Authorization", &format!("Bearer {}", node.token))
+        .call()
+        .map_err(|e| CliError::msg(format!("streaming logs from node {}: {e}", node.name)))?;
+    Ok(resp.into_reader())
 }

@@ -15,6 +15,17 @@
 //! that happen to start after it. This covers the common case (a web
 //! service resolving `db` because it correctly declares `depends_on:
 //! [db]`) without the complexity of an embedded DNS resolver.
+//!
+//! Cross-host (`node:`-tagged) services get the same treatment, with one
+//! real difference: since there's no overlay network between nodes'
+//! completely separate container subnets, a `node:`-tagged dependency
+//! resolves to *its node's own host address* (see `node_host`), not a
+//! container-internal IP - the dependent service must reach it via a
+//! `ports:`-published port it already knows to use, since there's no
+//! dynamic port lookup here. A service depending on a plain *local*
+//! (non-`node:`) one from a *different* node has no such address to
+//! resolve to (there's no reliable "this machine's own externally-
+//! reachable address" to hand out) and gets nothing, same as always.
 
 mod backup;
 mod compose;
@@ -71,6 +82,21 @@ enum Command {
     Backup(BackupArgs),
     /// Recreate kiln.yaml and every volume from a `backup` archive
     Restore(RestoreArgs),
+    /// Create a `node:`-tagged service fresh on a different registered
+    /// node - never automatic (see this crate's own module docs on why
+    /// there's no automatic failover): run this yourself once you've
+    /// noticed a node is down, e.g. via `kiln node ls`'s own reachability
+    /// check.
+    Reschedule(RescheduleArgs),
+}
+
+#[derive(clap::Args)]
+struct RescheduleArgs {
+    /// The service name, as it appears in kiln.yaml
+    service: String,
+    /// Name of an already-registered node (`kiln node ls`) to create it
+    /// on instead
+    to: String,
 }
 
 #[derive(clap::Args)]
@@ -152,6 +178,7 @@ fn main() {
         Command::Build => cmd_build(&store, &project, &context_dir, &compose),
         Command::Backup(args) => backup::backup(&store, &project, &cli.file, &compose, args.output),
         Command::Restore(_) => unreachable!("handled above"),
+        Command::Reschedule(args) => cmd_reschedule(&store, &project, &context_dir, &compose, &args.service, &args.to),
     };
 
     if let Err(e) = result {
@@ -182,19 +209,37 @@ fn pick_subnet(project: &str) -> String {
     format!("172.{octet}.0.0/24")
 }
 
+/// Cross-host service discovery is deliberately narrow: there is no
+/// overlay/VPN between nodes (containers on different nodes sit on
+/// completely separate, unrouted bridge subnets), so the only address
+/// that means anything to *another machine* is the node's own host
+/// address - the same one already used to reach its `kilnd`. This
+/// resolves a name to that host address only; it is the caller's own
+/// responsibility to `ports:`-publish the target service on a port the
+/// consumer already expects to use (there's no dynamic port lookup here,
+/// just a name -> host-IP mapping via `/etc/hosts`, same mechanism the
+/// same-host case already used before this).
+fn node_host(node: &kiln_cli::commands::node::Node) -> String {
+    node.address.split(':').next().unwrap_or(&node.address).to_string()
+}
+
 fn resolve_service_image(store: &Store, project: &str, context_dir: &Path, name: &str, svc: &Service) -> CliResult<String> {
     if svc.build.is_some() && svc.node.is_some() {
-        // Building remotely would mean shipping the build context over
-        // the network to a node that might not even share this
-        // machine's filesystem layout - real complexity this MVP
-        // deliberately doesn't take on (see the module docs on multi-
-        // host's deliberately narrow scope). `build:` + `node:` together
-        // fails clearly here rather than either silently building
-        // locally and running remotely (confusing: which image?) or
-        // trying to build on the remote node.
-        return Err(CliError::msg(format!(
-            "service {name:?}: `build:` + `node:` together isn't supported - build and push an image, then reference it with `image:` instead"
-        )));
+        // Shipping the build context itself to a node that might not
+        // even share this machine's filesystem layout is real complexity
+        // this MVP doesn't take on. But `build:` + `node:` + `image:`
+        // together *is* supported (see the branch below): build locally,
+        // push the result to the registry `image:` names, then have the
+        // remote node pull that same reference - the same "build here,
+        // push, deploy there" shape `docker compose`'s own `build:` +
+        // `image:` combination has, and it reuses the registry push/pull
+        // path this project already has rather than inventing a second
+        // one.
+        if svc.image.is_none() {
+            return Err(CliError::msg(format!(
+                "service {name:?}: `build:` + `node:` needs `image:` too - a registry reference the remote node can pull the built image back from (same as `docker compose`'s own build:+image: combination)"
+            )));
+        }
     }
     if let Some(build_path) = &svc.build {
         let build_ctx = context_dir.join(build_path);
@@ -202,6 +247,22 @@ fn resolve_service_image(store: &Store, project: &str, context_dir: &Path, name:
         let source = std::fs::read_to_string(&kilnfile_path)
             .map_err(|e| CliError::msg(format!("service {name}: reading {}: {e}", kilnfile_path.display())))?;
         let output = kiln_image::build::build(store, &build_ctx, &source).map_err(|e| CliError::msg(format!("service {name}: build failed: {e}")))?;
+
+        if let (Some(node_name), Some(image_ref)) = (&svc.node, &svc.image) {
+            // Tag under the exact reference `image:` names (not the usual
+            // `{project}_{name}` local tag - that name has no meaning to
+            // whatever registry `image_ref` points at), push it there,
+            // then hand the same reference back so the remote dispatch
+            // in `cmd_up` pulls precisely what was just pushed.
+            let (repo, tag) = kiln_image::image::split_name_tag(image_ref);
+            let repo = normalize_repository(repo);
+            store.tag(&repo, tag, output.image_id)?;
+            println!("  {name}: pushing {image_ref} for node {node_name}...");
+            kiln_image::registry::push(store, &output.image_id, image_ref)
+                .map_err(|e| CliError::msg(format!("service {name}: pushing {image_ref}: {e}")))?;
+            return Ok(image_ref.clone());
+        }
+
         let repo = normalize_repository(&format!("{project}_{name}"));
         store.tag(&repo, "latest", output.image_id)?;
         Ok(format!("{repo}:latest"))
@@ -210,6 +271,69 @@ fn resolve_service_image(store: &Store, project: &str, context_dir: &Path, name:
     } else {
         Err(CliError::msg(format!("service {name:?} has neither `image` nor `build`")))
     }
+}
+
+/// Builds/resolves `svc`'s image and creates it on `node` - the shared
+/// core of `cmd_up`'s own node-tagged dispatch and `cmd_reschedule`
+/// (which calls this with an explicit *different* node than `svc.node`
+/// names, precisely because it exists to move a service somewhere else
+/// without waiting for `svc.node` itself to change).
+#[allow(clippy::too_many_arguments)] // two call sites, both already assembling exactly these values; a params struct would just move them, not reduce them
+fn dispatch_remote_service(
+    store: &Store,
+    project: &str,
+    context_dir: &Path,
+    name: &str,
+    svc: &Service,
+    node: &kiln_cli::commands::node::Node,
+    node_name: &str,
+    network_name: &str,
+    hosts: &[(String, String)],
+) -> CliResult<remote::RemoteContainer> {
+    let mut image = resolve_service_image(store, project, context_dir, name, svc)?;
+    if !svc.ports.is_empty() {
+        remote::ensure_remote_network(node, network_name, &pick_subnet(project));
+    }
+    if svc.build.is_some() {
+        // `resolve_service_image` just pushed this image to the registry
+        // `image:` names - the remote node never has it yet (kilnd never
+        // auto-pulls a missing local tag, see `remote::pull_image`'s own
+        // docs), so it needs telling explicitly before `create_container`
+        // below can resolve it.
+        println!("  {name}: pulling {image} on {node_name}...");
+        remote::pull_image(node, &image)?;
+        // A pull tags the result locally under the *host-stripped*
+        // repository (see `kiln_image::registry::Reference::parse`'s own
+        // docs: the host is routing information for where to fetch from,
+        // not part of the local tag's identity) - the remote node's own
+        // `Image::resolve` for the create call right below needs that
+        // same host-stripped form, not the full `image:` reference
+        // `pull_image` was just given.
+        let reference = kiln_image::registry::Reference::parse(&image);
+        image = format!("{}:{}", reference.repository, reference.tag);
+    }
+
+    let container_name = format!("{project}_{name}");
+    println!("Starting {name} on {node_name}...");
+    let args = remote::RunArgs {
+        name: container_name,
+        image,
+        command: svc.command.clone().map(|c| c.into_vec()).unwrap_or_default(),
+        volumes: svc.volumes.clone(),
+        network: if svc.ports.is_empty() { None } else { Some(network_name.to_string()) },
+        environment: svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        ports: svc.ports.clone(),
+        secrets: svc.secrets.clone(),
+        extra_hosts: hosts.to_vec(),
+        security: kilnd_core::security::SecurityProfile {
+            seccomp_unconfined: svc.security_opt.iter().any(|s| s == "seccomp:unconfined"),
+            cap_add: svc.cap_add.clone(),
+            cap_drop: svc.cap_drop.clone(),
+        },
+    };
+    let container = remote::create_container(node, args)?;
+    println!("  {name}: {} on {node_name}", &container.id[..12.min(container.id.len())]);
+    Ok(container)
 }
 
 fn cmd_build(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFile) -> CliResult {
@@ -221,6 +345,58 @@ fn cmd_build(store: &Store, project: &str, context_dir: &Path, compose: &Compose
         let image = resolve_service_image(store, project, context_dir, name, svc)?;
         println!("{name} built: {image}");
     }
+    Ok(())
+}
+
+/// Creates `service` fresh on `to_node_name`, bypassing whatever `node:`
+/// it's actually declared under in `kiln.yaml` - the explicit,
+/// never-automatic response to a node going unreachable (`kiln node ls`
+/// already surfaces that; nothing here watches for it or reacts on its
+/// own). Deliberately does not touch `kiln.yaml` itself: silently
+/// rewriting the user's own file out from under them on their behalf
+/// would be a much bigger surprise than printing a one-line reminder to
+/// do it themselves for the change to survive the next `up`.
+fn cmd_reschedule(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFile, service: &str, to_node_name: &str) -> CliResult {
+    let svc = compose
+        .services
+        .get(service)
+        .ok_or_else(|| CliError::msg(format!("no such service: {service:?}")))?;
+    let Some(from_node_name) = &svc.node else {
+        return Err(CliError::msg(format!(
+            "service {service:?} has no `node:` in kiln.yaml - it isn't a remote service, there's nothing to reschedule"
+        )));
+    };
+    let to_node = kiln_cli::commands::node::find_node(store, to_node_name)
+        .ok_or_else(|| CliError::msg(format!("no such node: {to_node_name:?} (see `kiln node ls`)")))?;
+
+    if let Some(from_node) = kiln_cli::commands::node::find_node(store, from_node_name) {
+        if kiln_cli::commands::node::ping(&from_node) {
+            println!(
+                "note: {from_node_name} (where {service} currently runs) is still reachable - its container there is NOT being stopped automatically; you may want to remove it yourself once {to_node_name} is confirmed healthy."
+            );
+        }
+    }
+
+    let network_name = format!("{project}_default");
+    // Best-effort discovery entries for the rescheduled service's own
+    // dependencies - only covers other `node:`-tagged services (see
+    // `node_host`'s own docs on why a plain local one can't be resolved
+    // the same way), and isn't dependency-order-aware the way `cmd_up`'s
+    // own `hosts` list is: this is a single-service action, not a full
+    // redeploy.
+    let hosts: Vec<(String, String)> = compose
+        .services
+        .iter()
+        .filter(|(name, _)| name.as_str() != service)
+        .filter_map(|(name, s)| {
+            let node = kiln_cli::commands::node::find_node(store, s.node.as_ref()?)?;
+            Some((name.clone(), node_host(&node)))
+        })
+        .collect();
+
+    dispatch_remote_service(store, project, context_dir, service, svc, &to_node, to_node_name, &network_name, &hosts)?;
+
+    println!("Update kiln.yaml: change `node: {from_node_name}` to `node: {to_node_name}` for service {service:?} so this survives the next `kiln-compose up`.");
     Ok(())
 }
 
@@ -243,6 +419,7 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
     let order = compose::dependency_order(&compose.services).map_err(CliError::msg)?;
 
     let mut started = Vec::new();
+    let mut remote_started: Vec<RemoteTail> = Vec::new();
     let mut hosts: Vec<(String, String)> = Vec::new();
 
     for name in &order {
@@ -256,39 +433,33 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
             if let Some(existing) = remote::get_container(&node, &container_name) {
                 if existing.status == "running" {
                     println!("{name} already running on {node_name} ({})", &existing.id[..12.min(existing.id.len())]);
+                    hosts.push((name.clone(), node_host(&node)));
+                    remote_started.push(RemoteTail {
+                        display_name: name.clone(),
+                        node: node.clone(),
+                        container_name: container_name.clone(),
+                    });
                     continue;
                 }
             }
 
-            let image = resolve_service_image(store, project, context_dir, name, svc)?;
-            if !svc.ports.is_empty() {
-                remote::ensure_remote_network(&node, &network_name, &pick_subnet(project));
-            }
-
-            println!("Starting {name} on {node_name}...");
-            let args = remote::RunArgs {
-                name: container_name,
-                image,
-                command: svc.command.clone().map(|c| c.into_vec()).unwrap_or_default(),
-                volumes: svc.volumes.clone(),
-                network: if svc.ports.is_empty() { None } else { Some(network_name.clone()) },
-                environment: svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-                ports: svc.ports.clone(),
-                secrets: svc.secrets.clone(),
-                security: kilnd_core::security::SecurityProfile {
-                    seccomp_unconfined: svc.security_opt.iter().any(|s| s == "seccomp:unconfined"),
-                    cap_add: svc.cap_add.clone(),
-                    cap_drop: svc.cap_drop.clone(),
-                },
-            };
-            let container = remote::create_container(&node, args)?;
-            println!("  {name}: {} on {node_name}", &container.id[..12.min(container.id.len())]);
-            // Deliberately no `hosts` entry: cross-host service discovery
-            // (a remote service resolving a local one by name, or vice
-            // versa) isn't in scope for this first pass - see the module
-            // docs on multi-host's narrow MVP scope. A same-host service
-            // started after this one still gets nothing from it either,
-            // for the same reason.
+            dispatch_remote_service(store, project, context_dir, name, svc, &node, node_name, &network_name, &hosts)?;
+            hosts.push((name.clone(), node_host(&node)));
+            remote_started.push(RemoteTail {
+                display_name: name.clone(),
+                node,
+                container_name,
+            });
+            // A later service (local or on another node) that
+            // `depends_on` this one resolves its name to *this node's own
+            // host address* (see `node_host`'s own docs on why that's the
+            // only address that means anything cross-host, and its
+            // "ports:-publish it yourself" limitation). The reverse
+            // direction - this service depending on a plain local
+            // (non-`node:`) one - isn't resolvable the same way: there's
+            // no reliable "this machine's own externally-reachable
+            // address" to hand out, so that case still gets nothing,
+            // same as before this.
             continue;
         }
 
@@ -348,7 +519,7 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
     if detach {
         Ok(())
     } else {
-        stream_aggregated_logs(store, &started, true)
+        stream_aggregated_logs(store, &started, &remote_started, true)
     }
 }
 
@@ -458,20 +629,25 @@ fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
 }
 
 fn cmd_logs(store: &Store, project: &str, compose: &ComposeFile, follow: bool) -> CliResult {
+    let mut remote_tails: Vec<RemoteTail> = Vec::new();
+    let mut any_remote_found = false;
+
     for (name, svc) in &compose.services {
         let Some(node_name) = &svc.node else { continue };
         let container_name = format!("{project}_{name}");
-        if follow {
-            // Following a remote node's logs would need its own
-            // long-lived connection/thread per node - deferred rather
-            // than half-implemented (see remote.rs's own docs).
-            println!("{name} | (remote services on {node_name} don't support -f yet - showing nothing here)");
-            continue;
-        }
         let Some(node) = kiln_cli::commands::node::find_node(store, node_name) else {
             eprintln!("kiln-compose: {name}: no such node: {node_name}");
             continue;
         };
+        any_remote_found = true;
+        if follow {
+            remote_tails.push(RemoteTail {
+                display_name: name.clone(),
+                node,
+                container_name,
+            });
+            continue;
+        }
         match remote::logs(&node, &container_name) {
             Ok(content) => {
                 for line in content.lines() {
@@ -489,15 +665,13 @@ fn cmd_logs(store: &Store, project: &str, compose: &ComposeFile, follow: bool) -
         .filter_map(|(name, _)| Container::resolve(store, &format!("{project}_{name}")))
         .collect();
 
-    if containers.is_empty() {
-        if compose.services.values().all(|s| s.node.is_none()) {
-            println!("no containers for this project - run `kiln-compose up` first");
-        }
+    if containers.is_empty() && !any_remote_found {
+        println!("no containers for this project - run `kiln-compose up` first");
         return Ok(());
     }
 
     if follow {
-        stream_aggregated_logs(store, &containers, false)
+        stream_aggregated_logs(store, &containers, &remote_tails, false)
     } else {
         for c in &containers {
             let log_path = Container::log_path(store, &c.id);
@@ -517,13 +691,25 @@ extern "C" fn handle_sigint(_: i32) {
     STOP.store(true, Ordering::SeqCst);
 }
 
+/// A node-tagged service to tail remotely - `stream_aggregated_logs`'s
+/// equivalent of a local `Container` entry, since a remote service has
+/// no local `Container` state to read a log path out of at all (see
+/// `remote::logs_follow`'s own docs on the streaming mechanism this
+/// drives).
+struct RemoteTail {
+    display_name: String,
+    node: kiln_cli::commands::node::Node,
+    container_name: String,
+}
+
 /// Tail every container's log concurrently, each line prefixed with its
 /// service name, until Ctrl-C. If `own_containers` (true only for `up`'s
 /// own foreground mode, never for `logs -f`), Ctrl-C also stops every
-/// container - mirroring `docker-compose up`'s "foreground is the
-/// lifetime" behavior; `kiln-compose logs -f` just detaches from watching
-/// without touching anything.
-fn stream_aggregated_logs(store: &Store, containers: &[Container], own_containers: bool) -> CliResult {
+/// container - local ones via SIGTERM to their pid, remote ones via
+/// `remote::stop_container` - mirroring `docker-compose up`'s "foreground
+/// is the lifetime" behavior; `kiln-compose logs -f` just detaches from
+/// watching without touching anything.
+fn stream_aggregated_logs(store: &Store, containers: &[Container], remote_tails: &[RemoteTail], own_containers: bool) -> CliResult {
     STOP.store(false, Ordering::SeqCst);
     unsafe {
         let _ = nix::sys::signal::signal(nix::sys::signal::Signal::SIGINT, nix::sys::signal::SigHandler::Handler(handle_sigint));
@@ -559,6 +745,46 @@ fn stream_aggregated_logs(store: &Store, containers: &[Container], own_container
         }));
     }
 
+    for rt in remote_tails {
+        let display_name = rt.display_name.clone();
+        let node = rt.node.clone();
+        let container_name = rt.container_name.clone();
+        handles.push(std::thread::spawn(move || {
+            use std::io::Read;
+            let mut reader = match remote::logs_follow(&node, &container_name) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("kiln-compose: {display_name}: {e}");
+                    return;
+                }
+            };
+            let mut buf = [0u8; 4096];
+            let mut leftover = String::new();
+            while !STOP.load(Ordering::SeqCst) {
+                match reader.read(&mut buf) {
+                    // Connection closed - the remote container exited, or
+                    // kilnd's own follow loop ended for the same reason a
+                    // local one would (see kilnd's containers::logs).
+                    Ok(0) => break,
+                    Ok(n) => {
+                        leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        while let Some(idx) = leftover.find('\n') {
+                            let line = leftover[..idx].to_string();
+                            leftover.drain(..=idx);
+                            println!("{display_name} | {line}");
+                        }
+                    }
+                    // The read timeout `logs_follow` sets is exactly what
+                    // lets this loop notice `STOP` promptly instead of
+                    // blocking indefinitely for the remote side to write
+                    // more output - not a real error.
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                    Err(_) => break,
+                }
+            }
+        }));
+    }
+
     while !STOP.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -569,6 +795,9 @@ fn stream_aggregated_logs(store: &Store, containers: &[Container], own_container
             if let Some(pid) = c.pid {
                 let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM);
             }
+        }
+        for rt in remote_tails {
+            let _ = remote::stop_container(&rt.node, &rt.container_name);
         }
     }
 

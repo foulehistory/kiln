@@ -163,6 +163,12 @@ pub struct RunRequest {
     pub cap_add: Vec<String>,
     #[serde(default)]
     pub cap_drop: Vec<String>,
+    /// `(hostname, ip)` pairs written into `/etc/hosts` - same role as
+    /// `RunSpec::extra_hosts`. `kiln-compose`'s remote dispatch is the
+    /// only caller that populates this today (cross-host service
+    /// discovery, see its own module docs).
+    #[serde(default)]
+    pub extra_hosts: Vec<(String, String)>,
 }
 
 pub fn create(store: &Store, req: &Request) -> Response {
@@ -190,6 +196,7 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.restart_policy = restart_policy;
     spec.ports = body.ports;
     spec.secrets = body.secrets;
+    spec.extra_hosts = body.extra_hosts;
     spec.security = kilnd_core::security::SecurityProfile {
         seccomp_unconfined: body.seccomp_unconfined,
         cap_add: body.cap_add,
