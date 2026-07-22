@@ -6,15 +6,18 @@
 //! implemented.
 //!
 //! Unlike `kilnd` (loopback-only, a local dashboard backend), this is
-//! meant to be reached from other machines - run it behind a
-//! TLS-terminating reverse proxy (Caddy/nginx) for anything beyond a
-//! trusted LAN, since `kiln-image`'s client defaults to HTTPS for any
-//! host that isn't `localhost`/`127.0.0.1`.
+//! meant to be reached from other machines - either behind a
+//! TLS-terminating reverse proxy (Caddy/nginx), or with `serve
+//! --tls-cert`/`--tls-key` for native TLS (see `tls.rs`), since
+//! `kiln-image`'s client defaults to HTTPS for any host that isn't
+//! `localhost`/`127.0.0.1`.
 
 mod auth;
+mod gc;
 mod handlers;
 mod server;
 mod store;
+mod tls;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -39,12 +42,30 @@ enum Command {
         /// TCP port to listen on (defaults to $KILN_REGISTRY_PORT, or 5959)
         #[arg(long)]
         port: Option<u16>,
+        /// PEM certificate chain for native TLS (defaults to
+        /// $KILN_REGISTRY_TLS_CERT). Requires --tls-key too; omit both
+        /// for plain HTTP (the default - nothing changes unless this is
+        /// explicitly set).
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// PEM private key matching --tls-cert (defaults to
+        /// $KILN_REGISTRY_TLS_KEY).
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
     /// Manage user accounts - there's no self-registration; a server
     /// admin provisions each account by hand
     User {
         #[command(subcommand)]
         cmd: UserCommand,
+    },
+    /// Delete blobs no longer referenced by any stored manifest - see
+    /// `gc.rs`'s own docs on how this differs from `kiln gc` (the main
+    /// runtime's local-store equivalent).
+    Gc {
+        /// Report what would be removed without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -79,6 +100,14 @@ fn default_port() -> u16 {
     std::env::var("KILN_REGISTRY_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(5959)
 }
 
+fn default_tls_cert() -> Option<PathBuf> {
+    std::env::var("KILN_REGISTRY_TLS_CERT").ok().map(PathBuf::from)
+}
+
+fn default_tls_key() -> Option<PathBuf> {
+    std::env::var("KILN_REGISTRY_TLS_KEY").ok().map(PathBuf::from)
+}
+
 fn main() {
     let cli = Cli::parse();
     let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
@@ -92,12 +121,25 @@ fn main() {
     };
 
     match cli.command {
-        None | Some(Command::Serve { .. }) => {
-            let port = match cli.command {
-                Some(Command::Serve { port: Some(p) }) => p,
-                _ => default_port(),
+        None => {
+            if let Err(e) = server::run(store, default_port(), None) {
+                eprintln!("kiln-registry: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Serve { port, tls_cert, tls_key }) => {
+            let port = port.unwrap_or_else(default_port);
+            let tls_cert = tls_cert.or_else(default_tls_cert);
+            let tls_key = tls_key.or_else(default_tls_key);
+            let tls = match (tls_cert, tls_key) {
+                (Some(cert), Some(key)) => Some((cert, key)),
+                (None, None) => None,
+                _ => {
+                    eprintln!("kiln-registry: --tls-cert and --tls-key must both be given (or neither, for plain HTTP)");
+                    std::process::exit(1);
+                }
             };
-            if let Err(e) = server::run(store, port) {
+            if let Err(e) = server::run(store, port, tls) {
                 eprintln!("kiln-registry: {e}");
                 std::process::exit(1);
             }
@@ -136,5 +178,25 @@ fn main() {
             }
             println!("{username}: role set to {role:?}");
         }
+        Some(Command::Gc { dry_run }) => {
+            let summary = gc::collect_garbage(&store, dry_run);
+            let verb = if dry_run { "would remove" } else { "removed" };
+            println!(
+                "{verb} {} blob{} ({})",
+                summary.blobs_removed,
+                if summary.blobs_removed == 1 { "" } else { "s" },
+                format_bytes(summary.bytes_freed),
+            );
+        }
+    }
+}
+
+fn format_bytes(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KiB", n as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", n as f64 / (1024.0 * 1024.0))
     }
 }

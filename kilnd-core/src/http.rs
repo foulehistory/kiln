@@ -10,9 +10,8 @@
 //! no interoperability requirement pulling in a real HTTP stack would
 //! satisfy. One request per connection, always `Connection: close`.
 
-use crate::conn::Conn;
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, Write};
 
 pub struct Request {
     pub method: String,
@@ -25,7 +24,16 @@ pub struct Request {
 impl Request {
     /// Reads one request from `reader`. Returns `Ok(None)` on a clean EOF
     /// (the client closed the connection without sending anything).
-    pub fn read_from(reader: &mut BufReader<Conn>) -> io::Result<Option<Request>> {
+    ///
+    /// Generic over `impl BufRead` (rather than hard-typed to
+    /// `BufReader<Conn>`) so a caller can wrap something other than
+    /// `Conn` - e.g. `kiln-registry`'s own TLS stream type, which has no
+    /// equivalent of `Conn::try_clone` to hand a `BufReader` an owned
+    /// copy. Every caller can instead do `BufReader::new(&mut conn)` (a
+    /// borrow, since `&mut R` is `Read` for any `R: Read`) and get `conn`
+    /// back to write the response with once parsing is done, rather than
+    /// needing a second, independent handle onto the same connection.
+    pub fn read_from(reader: &mut impl BufRead) -> io::Result<Option<Request>> {
         let mut request_line = String::new();
         if reader.read_line(&mut request_line)? == 0 {
             return Ok(None);

@@ -22,12 +22,12 @@
 
 use crate::auth::{self, TokenStore};
 use crate::store::{RegistryStore, Role, User};
-use kilnd_core::conn::Conn;
+use crate::tls::RegistryStream;
 use kilnd_core::http::{Request, Response};
 use sha2::{Digest, Sha256};
 use std::io;
 
-pub fn route(store: &RegistryStore, tokens: &TokenStore, req: &Request, stream: &mut Conn) -> io::Result<()> {
+pub fn route(store: &RegistryStore, tokens: &TokenStore, req: &Request, stream: &mut RegistryStream) -> io::Result<()> {
     let segments: Vec<&str> = req.path.trim_matches('/').split('/').filter(|s| !s.is_empty()).collect();
 
     let response = if segments == ["v2"] {

@@ -199,6 +199,45 @@ username's namespace, which is exactly the one token the existing pull
 client already reuses for this lookup, so no client-side changes were
 needed to keep signature verification working under the new gate.
 
+## `kiln-registry` — native TLS (opt-in)
+
+`kiln-registry serve --tls-cert <path> --tls-key <path>` (or
+`$KILN_REGISTRY_TLS_CERT`/`$KILN_REGISTRY_TLS_KEY`) terminates TLS
+itself, using [`rustls`](https://docs.rs/rustls) - pure Rust, no system
+OpenSSL dependency, the same reasoning already applied to `seccompiler`
+over `libseccomp-rs` elsewhere in this project. Both flags are required
+together; omitting both is unchanged plain HTTP, still the default.
+This is now an alternative to (not a replacement for) running behind a
+TLS-terminating reverse proxy - either is fine; nothing requires native
+TLS specifically.
+
+The TLS-handling code (`kiln-registry/src/tls.rs`) is deliberately local
+to this crate rather than a new variant on `kilnd_core::conn::Conn` -
+that type is shared with `kilnd`, which has no need for TLS at all (see
+its own loopback-only section above), so keeping the `rustls` dependency
+and the connection-handling changes confined to `kiln-registry` avoids
+pulling a TLS stack into a binary that has no use for one.
+
+As before, `kiln-image`'s client already defaults to HTTPS for any
+registry host that isn't `localhost`/`127.0.0.1`, so pointing it at a
+`kiln-registry` instance with TLS enabled needs no client-side changes -
+same as it always required a certificate a client actually trusts (a
+real CA-issued one, or a private CA a client is separately configured to
+trust); self-signed certificates are rejected by design, not a bug.
+
+## `kiln-registry` — orphaned-blob garbage collection
+
+`kiln-registry gc [--dry-run]` deletes blobs under `blobs/sha256/` no
+longer referenced by any stored manifest's `config`/`layers` - the
+registry-side equivalent of `kiln gc`'s local-store mark-and-sweep (see
+`kiln-registry/src/gc.rs`'s own docs on how the two differ). Server-CLI-only,
+like account/role management above - there is no HTTP endpoint for it,
+so it can't be triggered remotely by any account regardless of role.
+`--dry-run` reports exactly what a real run would remove without
+deleting anything, worth having specifically because a shared,
+multi-tenant registry's blobs are costlier to lose by mistake than a
+single local dev store's.
+
 ## Security visibility — implemented
 
 `kiln inspect <container> --security` shows a container's *effective*

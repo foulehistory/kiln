@@ -211,6 +211,55 @@ impl RegistryStore {
     pub fn blob_exists(&self, digest: &str) -> bool {
         self.blob_path(digest).is_some_and(|p| p.is_file())
     }
+
+    pub fn blob_size(&self, digest: &str) -> Option<u64> {
+        let path = self.blob_path(digest)?;
+        std::fs::metadata(&path).ok().map(|m| m.len())
+    }
+
+    /// Used by `gc::collect_garbage`'s sweep phase.
+    pub fn remove_blob(&self, digest: &str) -> io::Result<()> {
+        let path = self
+            .blob_path(digest)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid digest: {digest}")))?;
+        std::fs::remove_file(path)
+    }
+
+    /// Every stored blob's bare hex digest (no `sha256:` prefix) -
+    /// `gc::collect_garbage`'s sweep candidates.
+    pub fn all_blob_hex(&self) -> Vec<String> {
+        let dir = self.data_dir.join("blobs").join("sha256");
+        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+        entries.flatten().filter_map(|e| e.file_name().into_string().ok()).collect()
+    }
+
+    /// Raw bytes of every stored manifest (`manifests/<repo...>/<tag>.json`,
+    /// walked recursively since a repository name may itself contain
+    /// slashes) - `gc::collect_garbage`'s mark phase parses each one for
+    /// the blob digests it references. Deliberately excludes `.sig.json`/
+    /// `.scan.json` siblings by their exact suffix, not just the `.json`
+    /// extension both of those also end in.
+    pub fn all_manifest_bytes(&self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        walk_manifests(&self.data_dir.join("manifests"), &mut out);
+        out
+    }
+}
+
+fn walk_manifests(dir: &Path, out: &mut Vec<Vec<u8>>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_manifests(&path, out);
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.ends_with(".json") && !name.ends_with(".sig.json") && !name.ends_with(".scan.json") {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    out.push(bytes);
+                }
+            }
+        }
+    }
 }
 
 pub fn read_file(path: &Path) -> Option<Vec<u8>> {
