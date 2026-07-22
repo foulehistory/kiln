@@ -40,6 +40,12 @@ pub fn backup(store: &Store, project: &str, compose_file: &Path, compose: &Compo
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "kiln.yaml".to_string());
     let compose_source = std::fs::read(compose_file).map_err(|e| CliError::msg(format!("reading {}: {e}", compose_file.display())))?;
+    // `.env` (if present) is needed to reproduce a `kiln.yaml` that
+    // interpolates the same way after a restore - same reasoning as
+    // backing up `kiln.yaml` itself. Not a secret in this project's own
+    // sense (it's not encrypted-at-rest via `kiln secret create`), so no
+    // reason to exclude it the way secret *values* are excluded below.
+    let dotenv_source = compose_file.parent().and_then(|dir| std::fs::read(dir.join(".env")).ok());
 
     let volumes: Vec<String> = compose.volumes.keys().cloned().collect();
     let secrets: BTreeSet<String> = compose.services.values().flat_map(|s| s.secrets.iter().cloned()).collect();
@@ -63,6 +69,9 @@ pub fn backup(store: &Store, project: &str, compose_file: &Path, compose: &Compo
 
     append_bytes(&mut builder, "manifest.json", &manifest_json)?;
     append_bytes(&mut builder, &manifest.compose_file_name, &compose_source)?;
+    if let Some(dotenv_source) = &dotenv_source {
+        append_bytes(&mut builder, ".env", dotenv_source)?;
+    }
     for name in &volumes {
         let bytes = volume::export_bytes(store, name).map_err(|e| CliError::msg(format!("exporting volume {name}: {e}")))?;
         append_bytes(&mut builder, &format!("volumes/{name}.tar.gz"), &bytes)?;
@@ -120,6 +129,11 @@ pub fn restore(store: &Store, archive_path: &Path, dest: Option<PathBuf>) -> Cli
             let mut data = Vec::new();
             std::io::copy(&mut entry, &mut data).map_err(|e| CliError::msg(format!("{e}")))?;
             std::fs::write(&compose_dest, &data).map_err(|e| CliError::msg(format!("writing {}: {e}", compose_dest.display())))?;
+        } else if entry_path_str == ".env" {
+            let mut data = Vec::new();
+            std::io::copy(&mut entry, &mut data).map_err(|e| CliError::msg(format!("{e}")))?;
+            let dotenv_dest = dest.join(".env");
+            std::fs::write(&dotenv_dest, &data).map_err(|e| CliError::msg(format!("writing {}: {e}", dotenv_dest.display())))?;
         } else if let Some(name) = entry_path_str.strip_prefix("volumes/").and_then(|s| s.strip_suffix(".tar.gz")) {
             let mut data = Vec::new();
             std::io::copy(&mut entry, &mut data).map_err(|e| CliError::msg(format!("{e}")))?;

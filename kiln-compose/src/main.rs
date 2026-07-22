@@ -29,6 +29,7 @@
 
 mod backup;
 mod compose;
+mod dotenv;
 mod remote;
 
 use clap::{Parser, Subcommand};
@@ -152,10 +153,24 @@ fn main() {
         return;
     }
 
+    let context_dir = cli.file.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+
     let source = match std::fs::read_to_string(&cli.file) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("kiln-compose: reading {}: {e}", cli.file.display());
+            std::process::exit(1);
+        }
+    };
+    // `.env` (if present, next to kiln.yaml - docker-compose's own
+    // convention) provides values for `${VAR}` interpolation in the raw
+    // text below, before it's ever handed to `compose::parse` - see
+    // `dotenv.rs`'s own docs on exactly what this does and doesn't do.
+    let dotenv = dotenv::load(&context_dir);
+    let source = match dotenv::interpolate(&source, &dotenv) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("kiln-compose: interpolating {}: {e}", cli.file.display());
             std::process::exit(1);
         }
     };
@@ -166,8 +181,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-
-    let context_dir = cli.file.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     let project = project_name(cli.project_name, &cli.file);
 
     let result = match cli.command {
