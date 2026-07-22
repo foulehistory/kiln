@@ -30,16 +30,12 @@ fn pull_busybox(store: &Store) -> bool {
     true
 }
 
-/// Parses `/proc/<pid>/status`'s `CapBnd:` line - a 64-bit hex bitmask of
-/// the process's capability bounding set (see `capabilities(7)`). Bit
-/// numbers are the same stable ABI values the kernel and every
-/// capability-aware tool (including the `caps` crate this project uses)
-/// agree on - not something specific to this test.
+/// Thin test-local wrapper: the real parsing logic now lives in
+/// `kilnd_core::security::read_capability_bounding_set` (moved there for
+/// `kiln inspect --security` to reuse, see its own docs) - this just
+/// unwraps for test-assertion convenience.
 fn capability_bounding_set(pid: i32) -> u64 {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("read /proc/<pid>/status");
-    let line = status.lines().find(|l| l.starts_with("CapBnd:")).expect("no CapBnd: line");
-    let hex = line.split_whitespace().nth(1).unwrap();
-    u64::from_str_radix(hex, 16).expect("CapBnd: value should be hex")
+    kilnd_core::security::read_capability_bounding_set(pid).expect("read capability bounding set")
 }
 
 /// `start()` returning only guarantees the child's pid exists and was
@@ -196,5 +192,49 @@ fn default_profile_blocks_mount_from_inside_the_container() {
     assert!(
         log.to_lowercase().contains("permitted") || log.to_lowercase().contains("permission"),
         "expected a permission-denied-shaped message from the blocked mount(2) call, got: {log:?}"
+    );
+}
+
+/// The other half of the allow-list's own risk: proving it isn't
+/// *accidentally* too strict for perfectly ordinary workloads.
+/// Exercises file I/O, process creation (`sh` forking `cat`), and
+/// networking (`wget` reaching all the way through `socket()`/`connect()`
+/// before failing on the *expected* thing - nothing listening on that
+/// port - rather than failing at the syscall layer). If the allow-list
+/// were missing something this common, one of these would come back
+/// `EPERM`/`ENOSYS` instead.
+#[test]
+fn allow_list_permits_ordinary_file_process_and_network_operations() {
+    if !require_root() {
+        return;
+    }
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = Store::open(store_dir.path()).unwrap();
+    if !pull_busybox(&store) {
+        return;
+    }
+
+    let mut spec = RunSpec::new("busybox:latest");
+    spec.command = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "echo hello > /tmp/x.txt && cat /tmp/x.txt && wget -T 2 -O /dev/null http://127.0.0.1:1/ 2>&1; echo EXIT:$?".to_string(),
+    ];
+    let container = start(&store, spec, None).expect("start");
+
+    let exited = wait_for_exit(&store, &container.id);
+    let log = std::fs::read_to_string(Container::log_path(&store, &exited.id)).unwrap_or_default();
+
+    kiln_cli::cgroup::remove(&exited.id);
+
+    assert!(log.contains("hello"), "file write/read should have succeeded, got: {log:?}");
+    let lower = log.to_lowercase();
+    assert!(
+        !lower.contains("not permitted") && !lower.contains("function not implemented"),
+        "a syscall the allow-list should cover came back EPERM/ENOSYS: {log:?}"
+    );
+    assert!(
+        lower.contains("refused") || lower.contains("connecting"),
+        "expected wget to reach connect() and fail on 'connection refused' (nothing listening on 127.0.0.1:1), not a seccomp denial: {log:?}"
     );
 }

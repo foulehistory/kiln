@@ -71,6 +71,19 @@ pub fn inspect(store: &Store, id: &str) -> Response {
     }
 }
 
+/// Same report `kiln inspect --security` prints, exposed for the
+/// dashboard - see `kiln_cli::commands::inspect::security_report`'s own
+/// docs for what "effective" and "live" mean here.
+pub fn security(store: &Store, id: &str) -> Response {
+    match Container::resolve(store, id) {
+        Some(mut c) => {
+            c.refresh(store);
+            Response::json(200, &kiln_cli::commands::inspect::security_report(&c))
+        }
+        None => Response::text(404, "no such container"),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct UpdateLimitsRequest {
     /// e.g. `"512m"`, `"1g"`, or omitted/null for unlimited - same

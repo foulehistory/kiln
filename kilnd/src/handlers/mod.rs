@@ -41,6 +41,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("GET", ["containers", id]) => containers::inspect(store, id).write_to(stream),
         ("DELETE", ["containers", id]) => containers::remove(store, id).write_to(stream),
         ("GET", ["containers", id, "stats"]) => containers::stats(store, id).write_to(stream),
+        ("GET", ["containers", id, "security"]) => containers::security(store, id).write_to(stream),
         ("POST", ["containers", id, "limits"]) => containers::update_limits(store, id, req).write_to(stream),
         ("POST", ["containers", id, "stop"]) => containers::stop(store, id).write_to(stream),
         ("POST", ["containers", id, "start"]) => containers::start_existing(store, id).write_to(stream),

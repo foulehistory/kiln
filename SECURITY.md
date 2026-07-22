@@ -33,7 +33,7 @@ Verified by two tests:
   path `kiln run` itself uses), inspected from the host: its real UID/GID
   must fall in the subordinate range and must never be `0`.
 
-## Seccomp — implemented (curated deny-list, not a full allow-list)
+## Seccomp — implemented (default-deny allow-list)
 
 Every container Kiln creates (`kiln run`, and Kilfile `RUN` steps) gets a
 seccomp-bpf filter by default (`kilnd_core::security::apply_seccomp`,
@@ -45,28 +45,37 @@ step before `execve`, after every mount/`pivot_root` operation Kiln's
 own init code still needs (`kilnd_core::security`'s own module docs
 explain why the ordering matters).
 
-Blocked syscalls return `EPERM` (matching Docker's own default profile's
-choice - most programs handle an error more gracefully than being killed
-by `SIGSYS`). The current list (`kilnd_core::security::denied_syscalls`)
-covers `ptrace`, `mount`/`umount2`/`pivot_root`, `reboot`,
-`kexec_load[_file]`, kernel module syscalls, `swapon`/`swapoff`,
-`iopl`/`ioperm`, the keyring syscalls, `perf_event_open`, `bpf`,
-`clock_settime`/`settimeofday`/`adjtimex`, `open_by_handle_at`,
-`userfaultfd`, `unshare`/`setns`, `quotactl`, `syslog`, and
-`lookup_dcookie`.
-
-**Deliberate scope trade-off**: this is a curated deny-list of specific
-dangerous/rarely-needed syscalls, not a full Docker-style allow-list of
-the ~300 syscalls a container might legitimately need. A full allow-list
-is more thorough (default-deny is a stronger security posture than
-default-allow-with-exceptions) but requires real confidence that nothing
-legitimate breaks across arbitrary workloads - substantially more work
-than this pass took on. Revisiting this as a real allow-list is the
-natural next step here.
+This is a default-deny allow-list, not a curated deny-list: any syscall
+not explicitly allowed returns `EPERM` (matching Docker's own default
+profile's choice - most programs handle an error more gracefully than
+being killed by `SIGSYS`). The allow-list itself
+(`kilnd_core::security::unconditionally_allowed_syscalls`/
+`conditionally_allowed_groups`) is sourced directly from Docker's own
+default seccomp profile - fetched and translated rather than
+hand-guessed - split into syscalls every container may always call, and
+ones only allowed if the container's effective capability set (baseline
+plus any `cap_add`) actually includes the capability Docker's own
+profile gates them behind (so e.g. `--cap-add SYS_PTRACE` also unlocks
+the syscalls that capability is actually for, not just the capability
+bookkeeping). `clone`'s namespace-creation flags are masked out unless
+`CAP_SYS_ADMIN` is present, and `clone3` is deliberately made to fail
+with `ENOSYS` (not `EPERM`) without it, so glibc's own `clone3`-then-
+legacy-`clone` fallback engages correctly instead of hard-failing -
+found and fixed via a real regression: the mysql-demo reference stack's
+`mysqld` failed to start ("Can't create thread") until this was in
+place.
 
 Opt-out: `kiln run --security-opt seccomp=unconfined`, or
 `security_opt: [seccomp:unconfined]` per service in `kiln.yaml` - never
 the default.
+
+Verified by `kiln-cli/tests/security_seccomp_caps.rs`: the three
+existing tests (mount blocked, `CAP_SYS_ADMIN` excluded/restorable) still
+pass unchanged, plus a new test proving the allow-list doesn't
+accidentally block ordinary file/process/network operations - and, in
+practice, by restarting both reference stacks (mysql-demo,
+palworld-test) fresh under the new profile and confirming they still
+come up and pass their own functional checks.
 
 ## Linux capabilities — implemented (Docker's own default baseline)
 
@@ -190,16 +199,21 @@ username's namespace, which is exactly the one token the existing pull
 client already reuses for this lookup, so no client-side changes were
 needed to keep signature verification working under the new gate.
 
+## Security visibility — implemented
+
+`kiln inspect <container> --security` shows a container's *effective*
+capability set (baseline plus `cap_add`, minus `cap_drop`, resolved to
+concrete names - not just the raw overrides `kiln inspect` alone already
+showed) and its seccomp status, cross-checked against the real,
+host-observed capability bounding set read live from
+`/proc/<pid>/status` for a still-running container
+(`kilnd_core::security::read_capability_bounding_set`/
+`decode_capability_set`). The same report is exposed over `kilnd`'s API
+(`GET /containers/:id/security`) and shown as a compact indicator in the
+dashboard's container detail view.
+
 ## Not yet done
 
-- **Seccomp as a full allow-list** — the current deny-list (see above)
-  blocks specific known-dangerous syscalls; a Docker-style default-deny
-  allow-list of the ~300 syscalls ordinary containers actually need
-  would be a strictly stronger posture, at the cost of real work
-  enumerating one with confidence.
-- **Visibility** — `kiln inspect --security` (or a section of the
-  existing `kiln inspect`) showing the effective seccomp/capability
-  profile a running container actually got, the same data exposed over
-  `kilnd`'s API, and a dashboard indicator. Now that seccomp and
-  capabilities are real, there's something true to show - this just
-  hasn't been built yet.
+Nothing currently tracked here - the two items previously listed
+(seccomp as an allow-list, and security visibility) are both done; see
+the sections above.

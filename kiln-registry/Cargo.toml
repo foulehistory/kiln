@@ -1,6 +1,6 @@
 [package]
 name = "kiln-registry"
-version = "0.1.30"
+version = "0.1.31"
 edition = "2021"
 description = "Self-hosted OCI Distribution registry server for sharing Kiln images."
 license = "Apache-2.0"
