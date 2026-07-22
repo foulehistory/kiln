@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <data-dir>/
-//!   users.json                              # [{username, password_hash, public_key}]
+//!   users.json                              # [{username, password_hash, public_key, role}]
 //!   blobs/sha256/<hex>                      # content-addressed, shared across every repository
 //!   manifests/<repository>/<tag>.json       # e.g. manifests/foulehistory/palworld/latest.json
 //!   manifests/<repository>/<tag>.sig.json   # {"algorithm":"ed25519","signature":"<hex>"}, if signed
@@ -15,6 +15,28 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Minimal per-account role - deliberately just three account-wide tiers,
+/// not per-repository permissions (see `handlers::token_endpoint` for
+/// where this is actually enforced, and `SECURITY.md` for the trust
+/// boundary this changed: reads now require authentication too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Can push to (and pull from) `<own-username>/*` only - the same
+    /// access every account implicitly had before roles existed, which is
+    /// why this is the default for accounts with no `role` recorded yet.
+    #[default]
+    Push,
+    /// Can pull (read) any repository once authenticated, but can never
+    /// obtain a push token for any repository, including their own.
+    Pull,
+    /// Can push to *any* repository, not just their own namespace -
+    /// still no separate HTTP user-management surface (see this
+    /// project's own choice to keep account/role provisioning a
+    /// server-CLI-only operation, `kiln-registry user add/set-role`).
+    Admin,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub username: String,
@@ -24,6 +46,8 @@ pub struct User {
     /// signed image - `None` until then, and for users who never sign.
     #[serde(default)]
     pub public_key: Option<String>,
+    #[serde(default)]
+    pub role: Role,
 }
 
 pub struct RegistryStore {
@@ -70,6 +94,23 @@ impl RegistryStore {
             self.save_users(&users)?;
         }
         Ok(())
+    }
+
+    /// `Err` (rather than a silent no-op like `set_public_key` above) when
+    /// `username` doesn't exist - unlike a pubkey set (always called for
+    /// an account that just proved it exists via `verify_basic_auth`),
+    /// `kiln-registry user set-role` is a standalone CLI invocation with
+    /// no earlier existence check, so a typo'd username should be a clear
+    /// error, not a silent no-op.
+    pub fn set_role(&self, username: &str, role: Role) -> io::Result<()> {
+        let mut users = self.load_users();
+        match users.iter_mut().find(|u| u.username == username) {
+            Some(u) => {
+                u.role = role;
+                self.save_users(&users)
+            }
+            None => Err(io::Error::new(io::ErrorKind::NotFound, format!("no such user: {username}"))),
+        }
     }
 
     /// `digest` must be `sha256:<64 lowercase hex chars>` - the only

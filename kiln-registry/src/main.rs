@@ -18,7 +18,7 @@ mod store;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use store::{RegistryStore, User};
+use store::{RegistryStore, Role, User};
 
 #[derive(Parser)]
 #[command(name = "kiln-registry", version, about = "Kiln's self-hosted OCI Distribution registry")]
@@ -50,9 +50,21 @@ enum Command {
 
 #[derive(Subcommand)]
 enum UserCommand {
-    /// Create or update a user's password. Only this user may push to
-    /// repositories under `<username>/...`.
-    Add { username: String, password: String },
+    /// Create a new account, or reset an existing one's password. Only
+    /// this user may push to repositories under `<username>/...` (unless
+    /// `--role admin`, which can push anywhere). Omitting `--role` on an
+    /// *existing* account leaves its current role untouched - this is
+    /// "reset the password", not "reset the role" too.
+    Add {
+        username: String,
+        password: String,
+        /// `push` (default for a brand new account), `pull`, or `admin` -
+        /// see `store::Role`'s own docs
+        #[arg(long)]
+        role: Option<Role>,
+    },
+    /// Change an existing account's role without touching its password.
+    SetRole { username: String, role: Role },
 }
 
 fn default_data_dir() -> PathBuf {
@@ -91,16 +103,22 @@ fn main() {
             }
         }
         Some(Command::User {
-            cmd: UserCommand::Add { username, password },
+            cmd: UserCommand::Add { username, password, role },
         }) => {
             let mut users = store.load_users();
             let password_hash = auth::hash_password(&password);
             match users.iter_mut().find(|u| u.username == username) {
-                Some(existing) => existing.password_hash = password_hash,
+                Some(existing) => {
+                    existing.password_hash = password_hash;
+                    if let Some(role) = role {
+                        existing.role = role;
+                    }
+                }
                 None => users.push(User {
                     username: username.clone(),
                     password_hash,
                     public_key: None,
+                    role: role.unwrap_or_default(),
                 }),
             }
             if let Err(e) = store.save_users(&users) {
@@ -108,6 +126,15 @@ fn main() {
                 std::process::exit(1);
             }
             println!("{username}");
+        }
+        Some(Command::User {
+            cmd: UserCommand::SetRole { username, role },
+        }) => {
+            if let Err(e) = store.set_role(&username, role) {
+                eprintln!("kiln-registry: {e}");
+                std::process::exit(1);
+            }
+            println!("{username}: role set to {role:?}");
         }
     }
 }

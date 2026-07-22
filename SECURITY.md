@@ -158,6 +158,38 @@ naming: an operator relying on nodes' addresses themselves being secret
 (rather than just the remote token) shouldn't put `node:`-tagged
 services under containers that shouldn't see that.
 
+## `kiln-registry` — per-account roles, reads now require authentication
+
+Every account has one of three roles (`kiln-registry user add --role`/
+`user set-role`, server-CLI-only - there is no HTTP endpoint for account
+or role management, and no self-registration):
+
+- **`push`** (the default, including for every account that existed
+  before roles did): push to and pull from `<own-username>/*` only -
+  exactly what every account could already do.
+- **`pull`**: pull any repository once authenticated, but can never
+  obtain a push token for *any* repository, including their own.
+- **`admin`**: push to any repository, not just their own namespace.
+
+This is a real, deliberate widening of what "authenticated" means here,
+not an incidental side effect: before this, `GET`/`HEAD` on blobs and
+manifests were always public - no token checked at all. Every read now
+requires a Bearer token from `/token`, and `/token` itself now requires
+valid `Authorization: Basic` credentials for *any* scope, including a
+bare `pull` - an anonymous request that used to succeed now gets a 401.
+Operationally, this means `KILN_REGISTRY_USER`/`KILN_REGISTRY_PASS` (or
+the equivalent for whatever's calling `kiln-image`'s registry client)
+must be set wherever a pull against a self-hosted `kiln-registry`
+happens, the same requirement chantier 3's remote-node pulls already
+depended on.
+
+`GET /users/:username/pubkey` (used during signature verification on
+pull) is the one read endpoint that isn't keyed by an exact repository -
+it accepts any unexpired pull token for *some* repository under that
+username's namespace, which is exactly the one token the existing pull
+client already reuses for this lookup, so no client-side changes were
+needed to keep signature verification working under the new gate.
+
 ## Not yet done
 
 - **Seccomp as a full allow-list** — the current deny-list (see above)

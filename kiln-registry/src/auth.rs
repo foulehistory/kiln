@@ -79,4 +79,25 @@ impl TokenStore {
             None => false,
         }
     }
+
+    /// Same as [`Self::validate`], but for `GET /users/:username/pubkey` -
+    /// an endpoint keyed by account name rather than an exact repository,
+    /// so it accepts any unexpired token granted `action` for *some*
+    /// repository under `owner`'s own namespace (i.e. whose first path
+    /// segment is `owner`). This is what lets the existing pull client
+    /// (`kiln_image::registry::verify_signature`, which already reuses
+    /// its one repository-scoped pull token as the Bearer header for the
+    /// pubkey fetch too) keep working unmodified now that this endpoint
+    /// requires a token at all.
+    pub fn validate_for_owner(&self, token: &str, owner: &str, action: &str) -> bool {
+        let tokens = self.tokens.lock().expect("token store mutex poisoned");
+        match tokens.get(token) {
+            Some(claims) => {
+                claims.repository.split('/').next() == Some(owner)
+                    && claims.actions.iter().any(|a| a == action)
+                    && claims.expires_at > SystemTime::now()
+            }
+            None => false,
+        }
+    }
 }
