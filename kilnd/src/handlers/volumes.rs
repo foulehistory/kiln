@@ -103,6 +103,50 @@ pub fn import(store: &Store, name: &str, req: &Request) -> Response {
     }
 }
 
+#[derive(Serialize)]
+pub struct SnapshotJson {
+    pub id: String,
+    pub size_bytes: u64,
+}
+
+pub fn list_snapshots(store: &Store, name: &str) -> Response {
+    let out: Vec<SnapshotJson> = volume::snapshot_list(store, name)
+        .into_iter()
+        .map(|s| SnapshotJson {
+            id: s.id,
+            size_bytes: s.size_bytes,
+        })
+        .collect();
+    Response::json(200, &out)
+}
+
+#[derive(Deserialize)]
+pub struct CreateSnapshotRequest {
+    #[serde(default)]
+    pub keep: Option<usize>,
+}
+
+pub fn create_snapshot(store: &Store, name: &str, req: &Request) -> Response {
+    let body: CreateSnapshotRequest = req.json().unwrap_or(CreateSnapshotRequest { keep: None });
+    match volume::snapshot_create(store, name, body.keep) {
+        Ok(info) => Response::json(
+            201,
+            &SnapshotJson {
+                id: info.id,
+                size_bytes: info.size_bytes,
+            },
+        ),
+        Err(e) => Response::text(400, format!("{e}")),
+    }
+}
+
+pub fn restore_snapshot(store: &Store, name: &str, snapshot_id: &str) -> Response {
+    match volume::snapshot_restore(store, name, snapshot_id) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "ok": true })),
+        Err(e) => Response::text(404, format!("{e}")),
+    }
+}
+
 /// Resolves a `?path=` query param (a path *relative to the volume
 /// root*) into a real filesystem path, refusing anything that would
 /// escape the volume: `..` components are rejected outright, and - since
