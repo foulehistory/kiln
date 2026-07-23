@@ -279,6 +279,47 @@ dashboard's container detail view as a limit/usage bar) reports
 configured limits against live cgroup usage - the same visibility
 precedent as `--security` above.
 
+## Secrets — AES-256-GCM at rest, opt-in rotation
+
+`kiln secret create`/`kiln.yaml`'s `secrets:` encrypt a value with a
+local, machine-scoped master key (`$HOME/.kiln/secrets/master.key`,
+generated once, 0600, never leaves the machine) before it ever touches
+disk (`kiln_image::secrets`) - unlike a plain `-e` environment variable,
+which `kiln inspect`/`Container`'s own persisted state show in the clear
+forever, a secret's value only ever exists as a file at
+`/run/secrets/<name>` inside the container's own tmpfs (`mode=0700`
+directory, `0400` files - see `kilnd_core::rootfs::mount_tmpfs_secrets`),
+never as an env var, never logged.
+
+`kiln secret rotate` re-encrypts under a fresh nonce (same master key)
+and is atomic: the new ciphertext is written to a temp file and only
+`rename`d over the old one once fully written, so a failure partway
+through leaves the previous value exactly as usable as before (see
+`kiln_image::secrets::rotate`'s own docs). **Whether a already-running
+container actually sees the new value live is not ambiguous - it's
+determined and reported per-container, not assumed:** `rotate` joins
+the `user`+`mnt` namespaces of every currently-running container that
+has the secret mounted (the same `setns(2)` mechanism `kiln cp`'s
+host-to-container direction already relies on - see `cp.rs`'s own
+module docs) and overwrites its live `/run/secrets/<name>` tmpfs file
+directly, from the host, as root. This is a real, unprivileged-from-the-
+container's-own-perspective host operation - no new capability or
+attack surface *inside* the sandbox is added, since it's the host
+(already fully trusted) reaching in, not the reverse. A service that
+only reads its secret file once at startup (a very common pattern - the
+official `mysql`/`postgres` images and most game server configs,
+Palworld's own admin password included, all work this way) won't
+observe the new value until it's actually restarted, even though the
+on-disk/tmpfs bytes are already updated - `kiln secret rotate`/the
+dashboard's "Rotate" button report exactly which running containers got
+a live update versus which are left "pending restart", per container,
+rather than presenting rotation as uniformly instantaneous.
+
+Never logged in clear at any point - old or new value - including in
+error paths (`update_live_secret_mount`'s own failure messages report
+only the mechanism that failed, e.g. `join_namespaces`/`write`/`chmod`,
+never file contents).
+
 ## Not yet done
 
 Nothing currently tracked here - the three items previously listed
