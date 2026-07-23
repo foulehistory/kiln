@@ -45,7 +45,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "kiln-compose", version, about = "Multi-container orchestration for Kiln")]
@@ -123,6 +123,13 @@ struct UpArgs {
     /// Start in the background instead of streaming aggregated logs
     #[arg(short = 'd', long)]
     detach: bool,
+    /// How long to wait for a `depends_on: { condition: service_healthy }`
+    /// dependency to actually report healthy before giving up - a
+    /// dependency that never becomes healthy (or explicitly reports
+    /// unhealthy) fails the whole `up` outright rather than hanging
+    /// forever.
+    #[arg(long, default_value_t = 120)]
+    depends_on_timeout: u64,
 }
 
 #[derive(clap::Args)]
@@ -184,7 +191,7 @@ fn main() {
     let project = project_name(cli.project_name, &cli.file);
 
     let result = match cli.command {
-        Command::Up(args) => cmd_up(&store, &project, &context_dir, &compose, args.detach),
+        Command::Up(args) => cmd_up(&store, &project, &context_dir, &compose, args.detach, args.depends_on_timeout),
         Command::Down => cmd_down(&store, &project, &compose),
         Command::Ps => cmd_ps(&store, &project, &compose),
         Command::Logs(args) => cmd_logs(&store, &project, &compose, args.follow),
@@ -423,7 +430,106 @@ fn cmd_reschedule(store: &Store, project: &str, context_dir: &Path, compose: &Co
     Ok(())
 }
 
-fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFile, detach: bool) -> CliResult {
+fn compose_waiting_dir(store: &Store) -> PathBuf {
+    store.root().join("compose-waiting")
+}
+
+/// A file at `<store>/compose-waiting/<project>_<service>` containing the
+/// dependency name being waited on - `kilnd`'s `GET /compose-waiting`
+/// reads this directory to tell the dashboard which not-yet-created
+/// services are mid-wait, since a one-shot `kiln-compose up` process has
+/// no other way to expose that transient state to a different process.
+/// Removed (best-effort) as soon as the wait this represents ends, one
+/// way or another - see its `Drop` impl.
+struct WaitingMarker {
+    path: PathBuf,
+}
+
+impl WaitingMarker {
+    fn create(store: &Store, project: &str, service: &str, waiting_for: &str) -> Self {
+        let dir = compose_waiting_dir(store);
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("{project}_{service}"));
+        let _ = std::fs::write(&path, waiting_for);
+        WaitingMarker { path }
+    }
+}
+
+impl Drop for WaitingMarker {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Blocks until every dependency of `svc` declared with `condition:
+/// service_healthy` actually reports healthy - a plain `service_started`
+/// dependency (the short list form, or an explicit `condition:
+/// service_started`) needs no wait at all, since `cmd_up`'s own
+/// dependency-ordered loop already guarantees it was *started* before
+/// `svc` by construction.
+///
+/// Only ever called once per dependent service, right before `cmd_up`
+/// actually starts it for *this* `up` invocation - `cmd_up` is a
+/// one-shot, sequential command with no persistent watcher of its own,
+/// so a dependency later restarting under its own `--restart`/backoff
+/// policy has nothing here left running to re-trigger a wait: by the
+/// time that could happen, this function has already returned and
+/// `svc` is already up.
+///
+/// Fails outright (rather than hanging or silently proceeding) if a
+/// dependency reports `unhealthy`, or never becomes healthy within
+/// `timeout_secs`.
+fn wait_for_dependency_health(store: &Store, project: &str, name: &str, svc: &Service, compose: &ComposeFile, timeout_secs: u64) -> CliResult<()> {
+    for dep in svc.depends_on.names() {
+        if svc.depends_on.condition(&dep) != compose::DependsOnCondition::ServiceHealthy {
+            continue;
+        }
+        let Some(dep_svc) = compose.services.get(&dep) else {
+            continue; // already reported by `dependency_order`'s own validation
+        };
+        let dep_container_name = format!("{project}_{dep}");
+        println!("  {name}: waiting for {dep} to be healthy...");
+        // A marker file, not just a println - `kilnd`'s `GET
+        // /compose-waiting` (and the dashboard's own indicator) needs
+        // something to poll from a *different* process, since this wait
+        // happens entirely inside this one-shot `kiln-compose up`
+        // invocation with nothing else watching it. Removed via `_guard`
+        // on every exit path below (success, unhealthy, or timeout) -
+        // never left behind stale.
+        let _guard = WaitingMarker::create(store, project, name, &dep);
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            let health: Option<String> = if let Some(node_name) = &dep_svc.node {
+                kiln_cli::commands::node::find_node(store, node_name)
+                    .and_then(|node| remote::get_container(&node, &dep_container_name))
+                    .map(|c| c.health)
+            } else {
+                Container::resolve(store, &dep_container_name).map(|mut c| {
+                    c.refresh(store);
+                    c.health.as_str().to_string()
+                })
+            };
+            match health.as_deref() {
+                Some("healthy") => break,
+                Some("unhealthy") => {
+                    return Err(CliError::msg(format!(
+                        "service {name:?}: dependency {dep:?} reported unhealthy - aborting startup"
+                    )));
+                }
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(CliError::msg(format!(
+                    "service {name:?}: timed out after {timeout_secs}s waiting for dependency {dep:?} to become healthy (see --depends-on-timeout)"
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFile, detach: bool, depends_on_timeout: u64) -> CliResult {
     for vol_name in compose.volumes.keys() {
         std::fs::create_dir_all(volume::path(store, vol_name))?;
     }
@@ -465,6 +571,8 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
                     continue;
                 }
             }
+
+            wait_for_dependency_health(store, project, name, svc, compose, depends_on_timeout)?;
 
             dispatch_remote_service(store, project, context_dir, name, svc, &node, node_name, &network_name, &hosts)?;
             hosts.push((name.clone(), node_host(&node)));
@@ -512,6 +620,8 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
                 continue;
             }
         }
+
+        wait_for_dependency_health(store, project, name, svc, compose, depends_on_timeout)?;
 
         let image = resolve_service_image(store, project, context_dir, name, svc)?;
 

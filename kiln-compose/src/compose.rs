@@ -51,8 +51,14 @@ pub struct Service {
     /// same syntax/role as `kiln run --secret`.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Either the short list form (`depends_on: [db, cache]`, meaning
+    /// `condition: service_started` for each - true as soon as the
+    /// dependency's container exists and is running, regardless of any
+    /// `healthcheck:` it may have) or Compose's own map form
+    /// (`depends_on: { db: { condition: service_healthy } }`) - see
+    /// `DependsOn`'s own docs.
     #[serde(default)]
-    pub depends_on: Vec<String>,
+    pub depends_on: DependsOn,
     /// Name of a `kiln node`-registered remote host to run this service
     /// on instead of locally - absent means local, same as today. See
     /// `main.rs`'s `resolve_service_image`/`cmd_up` for the dispatch
@@ -132,6 +138,68 @@ impl Resources {
             memory_limit_bytes,
             memory_swap_bytes,
         })
+    }
+}
+
+/// `depends_on:` in `kiln.yaml` - either the short list form or Compose's
+/// own map form with a per-dependency `condition:`. `Default` (an empty
+/// list) is what a service with no `depends_on:` key at all gets.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum DependsOn {
+    List(Vec<String>),
+    Map(BTreeMap<String, DependsOnEntry>),
+}
+
+impl Default for DependsOn {
+    fn default() -> Self {
+        DependsOn::List(Vec::new())
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DependsOnEntry {
+    #[serde(default)]
+    pub condition: DependsOnCondition,
+}
+
+/// `service_started` (the default, and the *only* meaning the short list
+/// form ever has - true as soon as the dependency's container exists and
+/// is running) or `service_healthy` (only meaningful for a dependency
+/// that itself has a `healthcheck:` - see `cmd_up`'s own
+/// `wait_for_dependency_health`, which is where this is actually
+/// enforced, not here).
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DependsOnCondition {
+    #[default]
+    ServiceStarted,
+    ServiceHealthy,
+}
+
+impl DependsOn {
+    pub fn names(&self) -> Vec<String> {
+        match self {
+            DependsOn::List(v) => v.clone(),
+            DependsOn::Map(m) => m.keys().cloned().collect(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            DependsOn::List(v) => v.len(),
+            DependsOn::Map(m) => m.len(),
+        }
+    }
+
+    /// `service_started` for every name in the short list form (it has no
+    /// way to express anything else) - `service_healthy` only from the
+    /// map form, and only for a name actually listed there.
+    pub fn condition(&self, name: &str) -> DependsOnCondition {
+        match self {
+            DependsOn::List(_) => DependsOnCondition::ServiceStarted,
+            DependsOn::Map(m) => m.get(name).map(|e| e.condition).unwrap_or_default(),
+        }
     }
 }
 
@@ -244,8 +312,8 @@ pub fn parse(source: &str) -> Result<ComposeFile, serde_yaml::Error> {
 /// cycle, naming exactly what's wrong rather than just "invalid graph".
 pub fn dependency_order(services: &BTreeMap<String, Service>) -> Result<Vec<String>, String> {
     for (name, svc) in services {
-        for dep in &svc.depends_on {
-            if !services.contains_key(dep) {
+        for dep in svc.depends_on.names() {
+            if !services.contains_key(&dep) {
                 return Err(format!("service {name:?} depends_on unknown service {dep:?}"));
             }
         }
@@ -270,7 +338,7 @@ pub fn dependency_order(services: &BTreeMap<String, Service>) -> Result<Vec<Stri
         // Re-derive remaining counts: a dependency may have just been
         // satisfied by this batch.
         for (name, count) in remaining.iter_mut() {
-            *count = services[*name].depends_on.iter().filter(|d| !order.contains(d)).count();
+            *count = services[*name].depends_on.names().iter().filter(|d| !order.contains(d)).count();
         }
     }
 

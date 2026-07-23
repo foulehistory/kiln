@@ -1,3 +1,4 @@
+pub mod compose_waiting;
 pub mod containers;
 pub mod exec;
 pub mod images;
@@ -67,6 +68,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("GET", ["volumes", name, "files", "content"]) => volumes::read_file(store, name, req).write_to(stream),
         ("GET", ["volumes", name, "export"]) => volumes::export(store, name).write_to(stream),
         ("POST", ["volumes", name, "import"]) => volumes::import(store, name, req).write_to(stream),
+        ("GET", ["compose-waiting"]) => compose_waiting::list(store).write_to(stream),
         ("GET", ["secrets"]) => secrets::list(store).write_to(stream),
         ("POST", ["secrets"]) => secrets::create(store, req).write_to(stream),
         ("DELETE", ["secrets", name]) => secrets::remove(store, name).write_to(stream),

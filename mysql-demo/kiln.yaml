@@ -17,10 +17,21 @@ services:
     resources:
       cpu: "1.0"
       memory: "512m"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -pdemo --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
   api:
     build: ./api
+    # `api` actually queries mysql on startup - service_healthy (not the
+    # default service_started) makes `kiln-compose up` wait for mysql's
+    # own healthcheck above to pass first, instead of racing api's first
+    # connection attempt against mysql's own first-boot datadir
+    # initialization.
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
     ports:
       - "8081:8081"
   # Swapped in for Adminer - same role (a browser-facing web UI for the
