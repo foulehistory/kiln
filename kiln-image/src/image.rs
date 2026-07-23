@@ -39,6 +39,20 @@ pub fn split_name_tag(s: &str) -> (&str, &str) {
     }
 }
 
+/// Point `reference` (`name[:tag]`) at `id` - the `kiln tag` primitive,
+/// shared by its CLI command and `kilnd`'s matching endpoint. This is the
+/// missing step between "build/pull an image under its own name" and
+/// "push it somewhere else": [`crate::registry::push`] (and
+/// [`Image::resolve`] underneath it) only ever pushes an image under a
+/// name it's *already* locally tagged as - there's no implicit "push
+/// this same content under a different name" - so pushing to an explicit
+/// host (`registry.example.com/you/app:latest`) needs this run first,
+/// exactly like `docker tag` before `docker push` does.
+pub fn tag_reference(store: &Store, id: &Hash, reference: &str) -> Result<()> {
+    let (name, tag) = split_name_tag(reference);
+    store.tag(&normalize_repository(name), tag, *id)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImageConfig {
     /// Ordered; a later entry with the same key overrides an earlier one,

@@ -35,6 +35,11 @@ enum Command {
     Pull(commands::pull::Args),
     /// Push an image to a registry
     Push(commands::push::Args),
+    /// Point a new name[:tag] at an already-built/pulled image - needed
+    /// before pushing under a name other than the one it already has
+    /// (e.g. an explicit-host registry reference), the same way `docker
+    /// tag` precedes `docker push`.
+    Tag(commands::tag::Args),
     /// List containers
     Ps(commands::ps::Args),
     /// List local images
@@ -94,6 +99,7 @@ fn main() {
         Command::Build(args) => commands::build::run(&store, args),
         Command::Pull(args) => commands::pull::run(&store, args),
         Command::Push(args) => commands::push::run(&store, args),
+        Command::Tag(args) => commands::tag::run(&store, args),
         Command::Ps(args) => commands::ps::run(&store, args),
         Command::Images(args) => commands::images::run(&store, args),
         Command::Exec(args) => commands::exec::run(&store, args),

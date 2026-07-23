@@ -210,6 +210,33 @@ pub fn push(store: &Store, req: &Request) -> Response {
 }
 
 #[derive(Deserialize)]
+pub struct TagRequest {
+    /// Existing local reference (`name:tag` or a bare image id) to tag under a new name.
+    pub source: String,
+    /// New `name[:tag]` to point at the same image - see `kiln tag`'s own docs.
+    pub target: String,
+}
+
+pub fn tag(store: &Store, req: &Request) -> Response {
+    let body: TagRequest = match req.json() {
+        Ok(b) => b,
+        Err(e) => return Response::text(400, format!("invalid JSON body: {e}")),
+    };
+    let image = match kiln_image::image::Image::resolve(store, &body.source) {
+        Ok(i) => i,
+        Err(e) => return Response::text(404, format!("resolving {}: {e}", body.source)),
+    };
+    let id = match image.save(store) {
+        Ok(id) => id,
+        Err(e) => return Response::text(500, format!("{e}")),
+    };
+    match kiln_image::image::tag_reference(store, &id, &body.target) {
+        Ok(()) => Response::json(200, &serde_json::json!({ "id": id.to_string(), "tagged_as": body.target })),
+        Err(e) => Response::text(500, format!("{e}")),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct BuildRequest {
     /// Absolute path *inside kilnd's own filesystem* (i.e. WSL2, not a
     /// Windows path) - same "kilnd only knows its own side" pattern as

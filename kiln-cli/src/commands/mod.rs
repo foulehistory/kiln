@@ -18,6 +18,7 @@ pub mod run;
 pub mod secret;
 pub mod start;
 pub mod stop;
+pub mod tag;
 pub mod top;
 pub mod volume;
 

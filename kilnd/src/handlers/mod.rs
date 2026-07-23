@@ -53,6 +53,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("GET", ["images"]) => images::list(store).write_to(stream),
         ("POST", ["images", "pull"]) => images::pull(store, req).write_to(stream),
         ("POST", ["images", "push"]) => images::push(store, req).write_to(stream),
+        ("POST", ["images", "tag"]) => images::tag(store, req).write_to(stream),
         ("POST", ["images", "build"]) => images::build(store, req).write_to(stream),
         ("GET", ["images", id]) => images::inspect(store, id).write_to(stream),
         ("DELETE", ["images", id]) => images::remove(store, id).write_to(stream),
