@@ -73,6 +73,15 @@ pub struct Args {
     #[arg(long)]
     pub cpus: Option<f64>,
 
+    /// Swap limit, same size syntax as `--memory` - defaults to `0` (no
+    /// swap at all) whenever `--memory` is given, since a memory limit
+    /// with unlimited swap isn't really a hard cap (see
+    /// `kilnd_core::cgroups::Limits::memory_swap_max_bytes`'s own docs).
+    /// Only needed to explicitly allow *some* swap on top of a memory
+    /// limit.
+    #[arg(long = "memory-swap")]
+    pub memory_swap: Option<String>,
+
     /// Restart policy: `no` (default), `always`, or `on-failure`
     #[arg(long, default_value = "no")]
     pub restart: String,
@@ -141,6 +150,7 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
 
 pub fn run(store: &Store, args: Args) -> CliResult {
     let memory_limit_bytes = args.memory.map(|s| parse_size(&s)).transpose().map_err(CliError::msg)?;
+    let memory_swap_bytes = args.memory_swap.map(|s| parse_size(&s)).transpose().map_err(CliError::msg)?;
     let restart_policy = RestartPolicy::parse(&args.restart).map_err(CliError::msg)?;
     let extra_env = args
         .env
@@ -177,6 +187,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
         extra_env,
         extra_hosts: Vec::new(),
         memory_limit_bytes,
+        memory_swap_bytes,
         cpu_limit: args.cpus,
         ports: args.ports,
         restart_policy,
@@ -187,6 +198,7 @@ pub fn run(store: &Store, args: Args) -> CliResult {
             cap_drop: args.cap_drop,
         },
         healthcheck,
+        log_preamble: None,
     };
 
     let container = start(store, spec, None)?;
@@ -217,6 +229,11 @@ pub struct RunSpec {
     /// the (deliberately modest) scope of this.
     pub extra_hosts: Vec<(String, String)>,
     pub memory_limit_bytes: Option<u64>,
+    /// Explicit swap override - `None` derives the pre-existing default
+    /// (`0` whenever `memory_limit_bytes` is set, unlimited otherwise, see
+    /// `kilnd_core::cgroups::Limits::memory_swap_max_bytes`'s own docs);
+    /// `Some(_)` (including `Some(0)`) always wins over that derivation.
+    pub memory_swap_bytes: Option<u64>,
     pub cpu_limit: Option<f64>,
     /// `<host>:<container>[/tcp|udp]` specs - see `network::PortSpec`.
     /// Requires `network` to be set (there's no container IP to route to
@@ -235,6 +252,17 @@ pub struct RunSpec {
     /// `crate::container::HealthCheckSpec`. Restart-fidelity field, same
     /// role as `security`/`secrets` above.
     pub healthcheck: Option<crate::container::HealthCheckSpec>,
+    /// A line to write to the fresh log file *before* the container's own
+    /// output starts - `restart` uses this to carry the previous run's
+    /// "killed by the kernel OOM killer" notice across the log truncation
+    /// `start` is about to do below (see its own comment right before the
+    /// write). Written through the same already-open `log_file` handle
+    /// the container's stdout/stderr get `dup2`'d from, not a second,
+    /// independently-positioned file handle - the two share no offset, so
+    /// a second handle's writes and the container's own concurrent output
+    /// would race and could clobber each other once the container starts
+    /// producing output of its own.
+    pub log_preamble: Option<String>,
 }
 
 impl RunSpec {
@@ -248,12 +276,14 @@ impl RunSpec {
             extra_env: Vec::new(),
             extra_hosts: Vec::new(),
             memory_limit_bytes: None,
+            memory_swap_bytes: None,
             cpu_limit: None,
             ports: Vec::new(),
             restart_policy: crate::container::RestartPolicy::No,
             secrets: Vec::new(),
             security: kilnd_core::security::SecurityProfile::default(),
             healthcheck: None,
+            log_preamble: None,
         }
     }
 }
@@ -410,6 +440,14 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
     // that re-open succeed - the same reasoning already applied to a
     // container's overlay upper/work dirs (see build.rs's execute_run).
     super::chown(&log_path, uid_base, gid_base)?;
+    if let Some(preamble) = &spec.log_preamble {
+        // Through `log_file` itself (not a fresh handle opened separately
+        // on `log_path`) and before the child that will inherit
+        // `log_fd` via `dup2` even exists yet - see `RunSpec::log_preamble`'s
+        // own docs on why that matters.
+        use std::io::Write;
+        let _ = writeln!(&log_file, "{preamble}");
+    }
 
     let mut env = image.config.env.clone();
     env.extend(spec.extra_env.iter().cloned());
@@ -449,6 +487,7 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         volumes: spec.volumes,
         env: spec.extra_env,
         memory_limit_bytes: spec.memory_limit_bytes,
+        memory_swap_bytes: spec.memory_swap_bytes,
         cpu_limit: spec.cpu_limit,
         ports: spec.ports,
         restart_policy: spec.restart_policy,
@@ -458,6 +497,7 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         health: crate::container::HealthStatus::Starting,
         restart_count,
         last_started_at: None,
+        last_exit_oom_killed: false,
     };
 
     // Created (unrestricted unless --memory/--cpus were given) before the
@@ -469,9 +509,16 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
         cpu_max_us: spec.cpu_limit.map(|cpus| (cpus * 100_000.0) as u64),
         cpu_period_us: 100_000,
         memory_max_bytes: spec.memory_limit_bytes,
-        // See Limits::memory_swap_max_bytes's docs: without also capping
-        // swap, a memory limit isn't really a hard cap.
-        memory_swap_max_bytes: spec.memory_limit_bytes.map(|_| 0),
+        // `spec.memory_swap_bytes` (explicit `--memory-swap`/`memory-swap:`
+        // override) always wins when given; otherwise fall back to the
+        // pre-existing default - see Limits::memory_swap_max_bytes's own
+        // docs: without also capping swap, a memory limit isn't really a
+        // hard cap.
+        memory_swap_max_bytes: spec.memory_swap_bytes.or(spec.memory_limit_bytes.map(|_| 0)),
+        // A soft warning threshold at ~90% of the hard cap - throttles/
+        // reclaims before the OOM killer would actually fire. No memory
+        // limit at all means no soft threshold either.
+        memory_high_bytes: spec.memory_limit_bytes.map(|b| (b as f64 * 0.9) as u64),
         pids_max: None,
     };
     let cgroup = crate::cgroup::create_for(&id, &limits).map_err(CliError::from)?;
@@ -524,12 +571,18 @@ pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
         extra_env: container.env.clone(),
         extra_hosts: Vec::new(),
         memory_limit_bytes: container.memory_limit_bytes,
+        memory_swap_bytes: container.memory_swap_bytes,
         cpu_limit: container.cpu_limit,
         ports: container.ports.clone(),
         restart_policy: container.restart_policy,
         secrets: container.secrets.clone(),
         security: container.security.clone(),
         healthcheck: container.healthcheck.clone(),
+        // Carries the fact across the log truncation `start` is about to
+        // do - see `RunSpec::log_preamble`'s own docs.
+        log_preamble: container
+            .last_exit_oom_killed
+            .then(|| "kiln: previous run was killed by the kernel OOM killer (memory.max exceeded)".to_string()),
     };
     start(store, spec, Some(container.id.clone()))
 }

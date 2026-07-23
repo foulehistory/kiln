@@ -21,6 +21,10 @@ pub struct Args {
     /// "effective" means here.
     #[arg(long)]
     pub security: bool,
+    /// Show only configured resource limits alongside live cgroup usage
+    /// (container targets only) - see `ResourcesReport`.
+    #[arg(long)]
+    pub resources: bool,
 }
 
 /// Also reused directly by `kilnd`'s `GET /containers/:id/security`
@@ -78,11 +82,49 @@ pub fn security_report(c: &Container) -> SecurityReport {
     }
 }
 
+/// Also reused directly by `kilnd`'s `GET /containers/:id/resources`
+/// handler - see `security_report`'s own docs on the same pattern.
+#[derive(Serialize)]
+pub struct ResourcesReport {
+    /// `None` for any field below means "unlimited", exactly like a plain
+    /// `kiln run` with no `--memory`/`--cpus`/`resources:` given.
+    pub cpu_limit: Option<f64>,
+    pub memory_limit_bytes: Option<u64>,
+    pub memory_swap_bytes: Option<u64>,
+    /// The derived soft-throttle threshold (`memory.high`, ~90% of
+    /// `memory_limit_bytes`) - see `kilnd_core::cgroups::Limits::memory_high_bytes`'s
+    /// own docs. `None` whenever there's no memory limit to derive it from.
+    pub memory_high_bytes: Option<u64>,
+    /// Live cgroup usage - `None` if the container has no cgroup (never
+    /// started, or removed).
+    pub live: Option<crate::cgroup::Stats>,
+    /// Whether the container's *last* exit was an OOM-kill - see
+    /// `Container::last_exit_oom_killed`'s own docs. Still `true` after
+    /// a container has since been restarted successfully, until its next
+    /// exit overwrites it - a historical fact about the last run, not a
+    /// live condition.
+    pub last_exit_oom_killed: bool,
+}
+
+pub fn resources_report(c: &Container) -> ResourcesReport {
+    ResourcesReport {
+        cpu_limit: c.cpu_limit,
+        memory_limit_bytes: c.memory_limit_bytes,
+        memory_swap_bytes: c.memory_swap_bytes,
+        memory_high_bytes: c.memory_limit_bytes.map(|b| (b as f64 * 0.9) as u64),
+        live: crate::cgroup::stats(&c.id),
+        last_exit_oom_killed: c.last_exit_oom_killed,
+    }
+}
+
 pub fn run(store: &Store, args: Args) -> CliResult {
     if let Some(mut c) = Container::resolve(store, &args.target) {
         c.refresh(store);
         if args.security {
             let report = security_report(&c);
+            println!("{}", serde_json::to_string_pretty(&report).map_err(|e| CliError::msg(e.to_string()))?);
+        } else if args.resources {
+            let report = resources_report(&c);
             println!("{}", serde_json::to_string_pretty(&report).map_err(|e| CliError::msg(e.to_string()))?);
         } else {
             println!("{}", serde_json::to_string_pretty(&c).map_err(|e| CliError::msg(e.to_string()))?);
@@ -92,6 +134,9 @@ pub fn run(store: &Store, args: Args) -> CliResult {
     if let Ok(image) = Image::resolve(store, &args.target) {
         if args.security {
             return Err(CliError::msg("--security only applies to containers, not images"));
+        }
+        if args.resources {
+            return Err(CliError::msg("--resources only applies to containers, not images"));
         }
         println!("{}", serde_json::to_string_pretty(&image).map_err(|e| CliError::msg(e.to_string()))?);
         return Ok(());

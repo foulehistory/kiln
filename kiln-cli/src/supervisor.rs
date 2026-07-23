@@ -187,10 +187,23 @@ where
                 _ => -1,
             };
 
+            // Distinguish "the kernel OOM-killed this for exceeding its
+            // memory.max" from any other reason the process died with
+            // SIGKILL (`kiln stop`'s fallback, `kiln rm -f`) - dmesg alone
+            // isn't visible via `kiln logs`, so this is the only way a
+            // user driving the CLI/dashboard ever sees which one happened.
+            // Read *before* the exit is persisted below, and before
+            // `restart` (if triggered) recreates the cgroup fresh for the
+            // next run.
+            let oom_killed = crate::cgroup::open(&container.id)
+                .map(kilnd_core::cgroups::CgroupV2::from_existing)
+                .and_then(|cg| cg.oom_kill_count().ok())
+                .is_some_and(|n| n > 0);
             let mut restart_policy = container.restart_policy;
             let mut restart_count = container.restart_count;
             if let Some(mut c) = Container::load(store, &container.id) {
                 c.status = Status::Exited(exit_code);
+                c.last_exit_oom_killed = oom_killed;
                 // A run that lasted long enough is treated as stable: the
                 // next crash (if any) starts a fresh backoff sequence
                 // instead of continuing to back off as if this were still
@@ -221,8 +234,27 @@ where
                     c.restart_count = c.restart_count.saturating_add(1);
                     let _ = c.save(store);
                 }
+                // `restart` reads `last_exit_oom_killed` (just persisted
+                // above) itself and carries an OOM notice across the log
+                // truncation it's about to do - see
+                // `commands::run::RunSpec::log_preamble`'s own docs on why
+                // that write has to happen there, through the same file
+                // handle the new run's stdout/stderr get `dup2`'d from,
+                // rather than racing it from here with a second one.
                 if let Err(e) = crate::commands::run::restart(store, &container.id) {
                     eprintln!("kiln: restart policy: relaunching {}: {e}", container.id);
+                }
+            } else if oom_killed {
+                // No restart coming: the container stays exited, so
+                // there's no live process left that could race this
+                // append - safe to just write it directly.
+                if let Ok(mut log) = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(Container::log_path(store, &container.id))
+                {
+                    use std::io::Write;
+                    let _ = writeln!(log, "kiln: container killed by the kernel OOM killer (memory.max exceeded)");
                 }
             }
             std::process::exit(0);

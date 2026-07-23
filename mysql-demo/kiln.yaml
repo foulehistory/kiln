@@ -11,6 +11,12 @@ services:
       MYSQL_DATABASE: kiln_demo
       MYSQL_USER: demo
       MYSQL_PASSWORD: demo
+    # Reasonable headroom for a demo dataset, not a hard sizing
+    # recommendation - see `kiln inspect --resources mysql-demo_mysql` for
+    # live usage against these limits.
+    resources:
+      cpu: "1.0"
+      memory: "512m"
   api:
     build: ./api
     depends_on:

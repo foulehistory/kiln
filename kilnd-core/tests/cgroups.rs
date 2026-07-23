@@ -117,6 +117,7 @@ fn cpu_and_memory_limits_round_trip_through_cgroupfs() {
         memory_max_bytes: Some(64 * 1024 * 1024),
         memory_swap_max_bytes: Some(0),
         pids_max: Some(16),
+        ..Limits::default()
     };
     let cgroup = CgroupV2::create(&kiln_root, &id, &limits).expect("create cgroup");
 

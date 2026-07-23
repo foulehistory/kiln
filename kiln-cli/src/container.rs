@@ -139,6 +139,12 @@ pub struct Container {
     /// silently reverting to unlimited.
     #[serde(default)]
     pub memory_limit_bytes: Option<u64>,
+    /// Explicit `--memory-swap`/`memory-swap:` override - same
+    /// restart-fidelity role as `memory_limit_bytes` above. `None` means
+    /// "derive the default", not "no swap limit" - see
+    /// `kilnd_core::cgroups::Limits::memory_swap_max_bytes`'s own docs.
+    #[serde(default)]
+    pub memory_swap_bytes: Option<u64>,
     #[serde(default)]
     pub cpu_limit: Option<f64>,
     /// `-p`/`--publish` specs this container was started with - persisted
@@ -184,6 +190,15 @@ pub struct Container {
     /// `restart_count`.
     #[serde(default)]
     pub last_started_at: Option<u64>,
+    /// Whether the container's last exit was a kernel OOM-kill (its
+    /// cgroup's `memory.events`'s `oom_kill` counter was non-zero right
+    /// after the process exited), as opposed to any other reason it
+    /// received `SIGKILL`/exited non-zero (`kiln stop`'s fallback,
+    /// `kiln rm -f`, an ordinary crash). Supervisor-owned, like
+    /// `restart_count`/`last_started_at` - reset at the start of every
+    /// run, set at most once per run, right when the exit is observed.
+    #[serde(default)]
+    pub last_exit_oom_killed: bool,
 }
 
 impl Container {

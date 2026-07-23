@@ -84,6 +84,19 @@ pub fn security(store: &Store, id: &str) -> Response {
     }
 }
 
+/// Same report `kiln inspect --resources` prints, exposed for the
+/// dashboard - see `kiln_cli::commands::inspect::resources_report`'s own
+/// docs.
+pub fn resources(store: &Store, id: &str) -> Response {
+    match Container::resolve(store, id) {
+        Some(mut c) => {
+            c.refresh(store);
+            Response::json(200, &kiln_cli::commands::inspect::resources_report(&c))
+        }
+        None => Response::text(404, "no such container"),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct UpdateLimitsRequest {
     /// e.g. `"512m"`, `"1g"`, or omitted/null for unlimited - same
@@ -126,8 +139,13 @@ pub fn update_limits(store: &Store, id: &str, req: &Request) -> Response {
         cpu_period_us: 100_000,
         memory_max_bytes: memory_limit_bytes,
         // See Limits::memory_swap_max_bytes's docs - without also capping
-        // swap, a memory limit isn't really a hard cap.
+        // swap, a memory limit isn't really a hard cap. This endpoint has
+        // no way to request an explicit swap override (unlike `kiln run
+        // --memory-swap`/`resources.memory-swap`), so it always derives
+        // the same default those do when no override is given.
         memory_swap_max_bytes: memory_limit_bytes.map(|_| 0),
+        // Same ~90%-of-max soft threshold `kiln run`/`start` derive.
+        memory_high_bytes: memory_limit_bytes.map(|b| (b as f64 * 0.9) as u64),
         pids_max: None,
     };
     if let Err(e) = cgroup.apply_limits(&limits) {
@@ -135,6 +153,7 @@ pub fn update_limits(store: &Store, id: &str, req: &Request) -> Response {
     }
 
     c.memory_limit_bytes = memory_limit_bytes;
+    c.memory_swap_bytes = memory_limit_bytes.map(|_| 0);
     c.cpu_limit = body.cpus;
     if let Err(e) = c.save(store) {
         return Response::text(500, format!("limits applied live but failed to persist for next start: {e}"));
@@ -169,6 +188,11 @@ pub struct RunRequest {
     /// e.g. `"512m"`, `"1g"` - see `commands::run::parse_size`.
     #[serde(default)]
     pub memory: Option<String>,
+    /// Explicit swap override, same size syntax as `memory` - see
+    /// `RunSpec::memory_swap_bytes`'s own docs for the default when this
+    /// is absent.
+    #[serde(default)]
+    pub memory_swap: Option<String>,
     #[serde(default)]
     pub cpus: Option<f64>,
     #[serde(default)]
@@ -211,6 +235,10 @@ pub fn create(store: &Store, req: &Request) -> Response {
         Ok(v) => v,
         Err(e) => return Response::text(400, e),
     };
+    let memory_swap_bytes = match body.memory_swap.as_deref().map(kiln_cli::commands::run::parse_size).transpose() {
+        Ok(v) => v,
+        Err(e) => return Response::text(400, e),
+    };
     let restart_policy = match body.restart.as_deref().map(kiln_cli::container::RestartPolicy::parse).transpose() {
         Ok(v) => v.unwrap_or_default(),
         Err(e) => return Response::text(400, e),
@@ -223,6 +251,7 @@ pub fn create(store: &Store, req: &Request) -> Response {
     spec.network = body.network;
     spec.extra_env = body.environment;
     spec.memory_limit_bytes = memory_limit_bytes;
+    spec.memory_swap_bytes = memory_swap_bytes;
     spec.cpu_limit = body.cpus;
     spec.restart_policy = restart_policy;
     spec.ports = body.ports;

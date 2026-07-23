@@ -27,7 +27,7 @@ pub fn open(container_id: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Stats {
     pub memory_current_bytes: u64,
     pub cpu_usage_usec: u64,

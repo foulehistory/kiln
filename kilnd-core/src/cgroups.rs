@@ -60,6 +60,13 @@ pub struct Limits {
     /// the OOM killer once the limit is exceeded, which is what most
     /// users actually expect "memory limit" to mean.
     pub memory_swap_max_bytes: Option<u64>,
+    /// A *soft* threshold (`memory.high`): once crossed, the kernel
+    /// throttles/reclaims the cgroup aggressively but does not invoke the
+    /// OOM killer - a warning shot before `memory_max_bytes` (the hard
+    /// cap) is actually hit. `None` writes cgroups v2's literal `"max"`
+    /// (no soft threshold, matching the pre-existing default before this
+    /// field was added).
+    pub memory_high_bytes: Option<u64>,
     pub pids_max: Option<u64>,
 }
 
@@ -172,6 +179,12 @@ impl CgroupV2 {
         };
         write_file(&self.dir.join("memory.max"), mem_max)?;
 
+        let mem_high = match limits.memory_high_bytes {
+            Some(b) => b.to_string(),
+            None => "max".to_string(),
+        };
+        write_file(&self.dir.join("memory.high"), mem_high)?;
+
         if let Some(b) = limits.memory_swap_max_bytes {
             write_file(&self.dir.join("memory.swap.max"), b.to_string())?;
         }
@@ -210,6 +223,26 @@ impl CgroupV2 {
             .trim()
             .parse()
             .map_err(|_| error::Error::InvalidArgument("memory.current not a number".into()))
+    }
+
+    /// The cgroup's own `memory.events`'s `oom_kill` counter - how many
+    /// times the kernel OOM killer has actually killed a process in this
+    /// cgroup (distinct from `oom`, which counts OOM *conditions*
+    /// regardless of whether a kill happened). This is the authoritative
+    /// way to tell "the kernel killed this for exceeding `memory.max`"
+    /// apart from any other reason a container's process might have died
+    /// with `SIGKILL` (e.g. `kiln stop`'s own fallback, `kiln rm -f`) -
+    /// same signal Docker/containerd use for their own `OOMKilled` status.
+    /// Always starts at 0 for a freshly `create`d cgroup (never a
+    /// leftover, reused directory - see `create`'s own docs), so any
+    /// non-zero count here reflects *this* container's run.
+    pub fn oom_kill_count(&self) -> Result<u64> {
+        let events = read_file(&self.dir.join("memory.events"))?;
+        Ok(events
+            .lines()
+            .find_map(|l| l.strip_prefix("oom_kill "))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0))
     }
 
     /// Remove this cgroup. Fails with `EBUSY` if it still has member

@@ -251,8 +251,36 @@ host-observed capability bounding set read live from
 (`GET /containers/:id/security`) and shown as a compact indicator in the
 dashboard's container detail view.
 
+## Resource limits (cgroups v2) — implemented
+
+`--memory`/`--cpus`/`--memory-swap` (`kiln run`) and a `resources:` block
+(`kiln.yaml`) apply real, kernel-enforced cgroups v2 limits per
+container: `cpu.max` (CPU time), `memory.max` (a hard cap - once
+exceeded with nothing left to reclaim, the kernel's OOM killer, not
+Kiln, ends the offending process) and `memory.swap.max` (defaults to `0`
+whenever a memory limit is set, so the limit can't be quietly evaded by
+swapping cold anonymous pages instead of being enforced - see
+`kilnd_core::cgroups::Limits::memory_swap_max_bytes`'s own docs). A
+derived `memory.high` (~90% of `memory.max`) throttles/reclaims
+aggressively as a soft warning before the hard cap is actually hit,
+without invoking the OOM killer itself. None of this is opt-in-required
+for isolation the way seccomp/capabilities are - a container given no
+limits at all behaves exactly as before (unlimited), so this only
+narrows what a container already inside the sandbox can do to the host,
+it doesn't widen it.
+
+An OOM-kill is told apart from any other reason a container's process
+received `SIGKILL` (`kiln stop`'s fallback, `kiln rm -f`) via the
+cgroup's own `memory.events`'s `oom_kill` counter, logged explicitly to
+the container's own log (visible via `kiln logs`, not just `dmesg`) and
+recorded on its persisted state. `kiln inspect --resources` (and
+`kilnd`'s matching `GET /containers/:id/resources`, shown in the
+dashboard's container detail view as a limit/usage bar) reports
+configured limits against live cgroup usage - the same visibility
+precedent as `--security` above.
+
 ## Not yet done
 
-Nothing currently tracked here - the two items previously listed
-(seccomp as an allow-list, and security visibility) are both done; see
-the sections above.
+Nothing currently tracked here - the three items previously listed
+(seccomp as an allow-list, security visibility, and cgroups resource
+limits) are all done; see the sections above.

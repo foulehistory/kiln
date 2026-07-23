@@ -22,6 +22,12 @@ struct RunRequest {
     ports: Vec<String>,
     secrets: Vec<String>,
     #[serde(default)]
+    memory: Option<String>,
+    #[serde(default)]
+    memory_swap: Option<String>,
+    #[serde(default)]
+    cpus: Option<f64>,
+    #[serde(default)]
     seccomp_unconfined: bool,
     #[serde(default)]
     cap_add: Vec<String>,
@@ -59,6 +65,13 @@ pub struct RunArgs {
     pub extra_hosts: Vec<(String, String)>,
     pub security: kilnd_core::security::SecurityProfile,
     pub healthcheck: Option<kiln_cli::container::HealthCheckSpec>,
+    /// `resources:` (`cpu`/`memory`/`memory-swap`) - see
+    /// `kiln_compose::compose::Resources`. Sent as the same size-suffix
+    /// strings `kiln.yaml` declares them in; `kilnd`'s handler parses
+    /// them the same way `kiln run --memory` does.
+    pub memory: Option<String>,
+    pub memory_swap: Option<String>,
+    pub cpus: Option<f64>,
 }
 
 /// Creates a container on `node` - the remote-dispatch equivalent of
@@ -76,6 +89,9 @@ pub fn create_container(node: &Node, args: RunArgs) -> CliResult<RemoteContainer
         ports: args.ports,
         secrets: args.secrets,
         extra_hosts: args.extra_hosts,
+        memory: args.memory,
+        memory_swap: args.memory_swap,
+        cpus: args.cpus,
         seccomp_unconfined: args.security.seccomp_unconfined,
         cap_add: args.security.cap_add,
         cap_drop: args.security.cap_drop,
@@ -95,6 +111,19 @@ pub fn create_container(node: &Node, args: RunArgs) -> CliResult<RemoteContainer
 /// `ps` from reporting on everything else.
 pub fn get_container(node: &Node, name: &str) -> Option<RemoteContainer> {
     ureq::get(&url(node, &format!("/containers/{name}")))
+        .set("Authorization", &format!("Bearer {}", node.token))
+        .call()
+        .ok()?
+        .into_json()
+        .ok()
+}
+
+/// `None` on any failure (unreachable node, container has no cgroup yet/
+/// anymore) - same "unknown, not an error" treatment as `get_container`.
+/// Deserializes directly into `kiln_cli::cgroup::Stats`, the exact JSON
+/// shape `kilnd`'s own `GET /containers/:id/stats` returns.
+pub fn get_stats(node: &Node, name: &str) -> Option<kiln_cli::cgroup::Stats> {
+    ureq::get(&url(node, &format!("/containers/{name}/stats")))
         .set("Authorization", &format!("Bearer {}", node.token))
         .call()
         .ok()?

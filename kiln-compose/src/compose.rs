@@ -82,6 +82,57 @@ pub struct Service {
     /// Docker Compose-shaped `healthcheck:` block - see `Healthcheck::into_spec`.
     #[serde(default)]
     pub healthcheck: Option<Healthcheck>,
+    /// `resources:` block (`cpu`/`memory`/`memory-swap`) - see
+    /// `Resources::into_limits`. Absent means unlimited, same as a plain
+    /// `kiln run` with no `--memory`/`--cpus` - existing stacks without
+    /// this field keep running exactly as before.
+    #[serde(default)]
+    pub resources: Option<Resources>,
+}
+
+/// `resources:` in `kiln.yaml` - Docker Compose calls this
+/// `deploy.resources.limits`, but Kiln isn't a swarm/orchestrator, so it's
+/// flattened to a plain per-service `resources:` block instead. Fields use
+/// the same Docker-style size suffixes (`k`/`m`/`g`) as `kiln run
+/// --memory`/`--memory-swap` - see `kiln_cli::commands::run::parse_size`.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Resources {
+    /// Number of CPUs, e.g. `"0.5"` for half a core - same meaning as
+    /// `kiln run --cpus`.
+    #[serde(default)]
+    pub cpu: Option<String>,
+    #[serde(default)]
+    pub memory: Option<String>,
+    #[serde(default, rename = "memory-swap")]
+    pub memory_swap: Option<String>,
+}
+
+/// Parsed form of `Resources`, matching the three separate fields
+/// `RunSpec`/remote `RunRequest` already take.
+pub struct ParsedResources {
+    pub cpu_limit: Option<f64>,
+    pub memory_limit_bytes: Option<u64>,
+    pub memory_swap_bytes: Option<u64>,
+}
+
+impl Resources {
+    pub fn parse(&self) -> Result<ParsedResources, String> {
+        let cpu_limit = self
+            .cpu
+            .as_deref()
+            .map(|s| {
+                s.parse::<f64>()
+                    .map_err(|_| format!("invalid cpu {s:?}: expected a number, e.g. \"0.5\""))
+            })
+            .transpose()?;
+        let memory_limit_bytes = self.memory.as_deref().map(kiln_cli::commands::run::parse_size).transpose()?;
+        let memory_swap_bytes = self.memory_swap.as_deref().map(kiln_cli::commands::run::parse_size).transpose()?;
+        Ok(ParsedResources {
+            cpu_limit,
+            memory_limit_bytes,
+            memory_swap_bytes,
+        })
+    }
 }
 
 /// `healthcheck:` in `kiln.yaml` - deliberately just the Compose fields

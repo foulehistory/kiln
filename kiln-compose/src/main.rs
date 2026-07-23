@@ -338,6 +338,15 @@ fn dispatch_remote_service(
         ports: svc.ports.clone(),
         secrets: svc.secrets.clone(),
         extra_hosts: hosts.to_vec(),
+        memory: svc.resources.as_ref().and_then(|r| r.memory.clone()),
+        memory_swap: svc.resources.as_ref().and_then(|r| r.memory_swap.clone()),
+        cpus: svc
+            .resources
+            .as_ref()
+            .and_then(|r| r.cpu.as_deref())
+            .map(|s| s.parse::<f64>())
+            .transpose()
+            .map_err(|_| CliError::msg(format!("service {name:?}: invalid resources.cpu")))?,
         security: kilnd_core::security::SecurityProfile {
             seccomp_unconfined: svc.security_opt.iter().any(|s| s == "seccomp:unconfined"),
             cap_add: svc.cap_add.clone(),
@@ -528,6 +537,12 @@ fn cmd_up(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFil
             .map_err(CliError::msg)?
             .unwrap_or_default();
         spec.healthcheck = svc.healthcheck.clone().map(Healthcheck::into_spec).transpose().map_err(CliError::msg)?;
+        if let Some(resources) = &svc.resources {
+            let parsed = resources.parse().map_err(|e| CliError::msg(format!("service {name:?}: {e}")))?;
+            spec.cpu_limit = parsed.cpu_limit;
+            spec.memory_limit_bytes = parsed.memory_limit_bytes;
+            spec.memory_swap_bytes = parsed.memory_swap_bytes;
+        }
 
         println!("Starting {name}...");
         let container = start(store, spec, None).map_err(|e| CliError::msg(format!("service {name}: {e}")))?;
@@ -615,30 +630,46 @@ fn cmd_down(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
 
 fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
     println!(
-        "{:<20}{:<14}{:<14}{:<11}{:<8}COMMAND",
-        "SERVICE", "CONTAINER ID", "STATUS", "HEALTH", "PID"
+        "{:<20}{:<14}{:<14}{:<11}{:<8}{:<10}{:<12}COMMAND",
+        "SERVICE", "CONTAINER ID", "STATUS", "HEALTH", "PID", "CPU(ms)", "MEM"
     );
     for (name, svc) in &compose.services {
         let container_name = format!("{project}_{name}");
 
         if let Some(node_name) = &svc.node {
-            let found = kiln_cli::commands::node::find_node(store, node_name).and_then(|node| remote::get_container(&node, &container_name));
+            let node = kiln_cli::commands::node::find_node(store, node_name);
+            let found = node.as_ref().and_then(|node| remote::get_container(node, &container_name));
             match found {
-                Some(c) => println!(
-                    "{:<20}{:<14}{:<14}{:<11}{:<8}(on {node_name})",
-                    name,
-                    &c.id[..12.min(c.id.len())],
-                    c.status,
-                    c.health,
-                    ""
-                ),
+                Some(c) => {
+                    let stats = node.as_ref().and_then(|node| remote::get_stats(node, &container_name));
+                    let cpu = stats
+                        .as_ref()
+                        .map(|s| (s.cpu_usage_usec / 1000).to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let mem = stats
+                        .as_ref()
+                        .map(|s| s.memory_current_bytes.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    println!(
+                        "{:<20}{:<14}{:<14}{:<11}{:<8}{:<10}{:<12}(on {node_name})",
+                        name,
+                        &c.id[..12.min(c.id.len())],
+                        c.status,
+                        c.health,
+                        "",
+                        cpu,
+                        mem,
+                    )
+                }
                 None => println!(
-                    "{:<20}{:<14}{:<14}{:<11}{:<8}",
+                    "{:<20}{:<14}{:<14}{:<11}{:<8}{:<10}{:<12}",
                     name,
                     "-",
                     format!("not created (on {node_name})"),
                     "",
-                    ""
+                    "",
+                    "-",
+                    "-",
                 ),
             }
             continue;
@@ -653,17 +684,28 @@ fn cmd_ps(store: &Store, project: &str, compose: &ComposeFile) -> CliResult {
                 };
                 let health = if c.healthcheck.is_some() { c.health.as_str() } else { "-" };
                 let pid = c.pid.map(|p| p.to_string()).unwrap_or_default();
+                let stats = kiln_cli::cgroup::stats(&c.id);
+                let cpu = stats
+                    .as_ref()
+                    .map(|s| (s.cpu_usage_usec / 1000).to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let mem = stats
+                    .as_ref()
+                    .map(|s| s.memory_current_bytes.to_string())
+                    .unwrap_or_else(|| "-".to_string());
                 println!(
-                    "{:<20}{:<14}{:<14}{:<11}{:<8}{}",
+                    "{:<20}{:<14}{:<14}{:<11}{:<8}{:<10}{:<12}{}",
                     name,
                     &c.id[..12.min(c.id.len())],
                     status,
                     health,
                     pid,
+                    cpu,
+                    mem,
                     c.command.join(" ")
                 );
             }
-            None => println!("{:<20}{:<14}{:<14}{:<11}{:<8}", name, "-", "not created", "", ""),
+            None => println!("{:<20}{:<14}{:<14}{:<11}{:<8}{:<10}{:<12}", name, "-", "not created", "", "", "-", "-"),
         }
     }
     Ok(())
