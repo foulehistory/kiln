@@ -550,11 +550,14 @@ pub fn start(store: &Store, spec: RunSpec, existing_id: Option<String>) -> CliRe
 /// disk) carries over rather than starting from a clean image again -
 /// the same "state survives a restart" behavior `docker start` has.
 ///
-/// Deliberately does not resurrect `extra_hosts`: those already live on
-/// disk as whatever `/etc/hosts` the previous run last wrote (untouched
-/// by this restart, since `start` only touches `/etc/hosts` when
-/// `extra_hosts` is non-empty), so re-supplying them here would just
-/// duplicate entries rather than restore anything.
+/// Passes no `extra_hosts` of its own - unlike a fresh `kiln-compose up`,
+/// a lone restart has no dependency-order-derived list to build one from.
+/// This no longer means stale neighbor entries, though:
+/// `commands::network::refresh_network_hosts` runs after every container
+/// (re)gets an IP - including this one - and rewrites `/etc/hosts` for
+/// every running container on the same network from their *current* IPs,
+/// so this container's own new address reaches its siblings and theirs
+/// reach it, regardless of which compose group either started in.
 pub fn restart(store: &Store, id_or_name: &str) -> CliResult<Container> {
     let mut container = Container::resolve(store, id_or_name).ok_or_else(|| CliError::msg(format!("no such container: {id_or_name}")))?;
     container.refresh(store);

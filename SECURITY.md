@@ -167,6 +167,25 @@ naming: an operator relying on nodes' addresses themselves being secret
 (rather than just the remote token) shouldn't put `node:`-tagged
 services under containers that shouldn't see that.
 
+Same-network `/etc/hosts` entries are now kept live, not just written
+once at creation (`commands::network::refresh_network_hosts`, called
+whenever any container's IP is (re)assigned): every *running* container
+on a shared bridge network learns every other running container's name
+and current IP, not just its own transitive `depends_on` from whenever
+it started. This widens what a container can learn by name lookup alone
+to the whole network's current membership rather than its own dependency
+subset - not a new capability (anything on the same bridge subnet could
+already discover the same addresses with an ARP sweep or a ping across
+the /24), just a named one now: don't rely on containers on a shared
+network being unable to enumerate their neighbors' names or addresses.
+
+Both refresh_network_hosts and each container's own initial `/etc/hosts`
+write chown the file into the container's own mapped uid/gid range, but
+that write itself happens from the host-side (real root) process, before
+the container's namespaces are entered - the same trust level every
+other pre-start setup step (volume mounts, secret materialization) already
+runs at.
+
 ## `kiln-registry` — per-account roles, reads now require authentication
 
 Every account has one of three roles (`kiln-registry user add --role`/

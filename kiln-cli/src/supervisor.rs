@@ -136,11 +136,22 @@ where
                                 container.status = Status::Running;
                                 container.last_started_at = Some(now_unix());
                                 container.health = crate::container::HealthStatus::Starting;
+                                let net_for_refresh = net_ip.as_ref().map(|(network, _)| network.clone());
                                 if let Some((network, ip)) = net_ip {
                                     container.network = Some(network);
                                     container.ip = Some(ip);
                                 }
-                                container.save(store).is_ok()
+                                let saved = container.save(store).is_ok();
+                                // Persist this container's own network/ip *before*
+                                // rewriting hosts - otherwise it wouldn't yet show up
+                                // in its own network's member list (see
+                                // `refresh_network_hosts`'s own docs).
+                                if saved {
+                                    if let Some(network) = &net_for_refresh {
+                                        crate::commands::network::refresh_network_hosts(store, network);
+                                    }
+                                }
+                                saved
                             }
                             Err(e) => {
                                 eprintln!("kiln: releasing container: {e}");

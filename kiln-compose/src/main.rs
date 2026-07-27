@@ -7,14 +7,17 @@
 //!
 //! # Service discovery: what it does and doesn't do
 //!
-//! Services reach each other by name via `/etc/hosts` entries injected
-//! before each container starts (`RunSpec::extra_hosts`), not a real DNS
-//! server. Because services start in dependency order, a service only
-//! ever gets host entries for services that were *already running* when
-//! it started - i.e. its own transitive `depends_on` - not for services
-//! that happen to start after it. This covers the common case (a web
-//! service resolving `db` because it correctly declares `depends_on:
-//! [db]`) without the complexity of an embedded DNS resolver.
+//! Services reach each other by name via `/etc/hosts`, not a real DNS
+//! server. Each container gets an initial set of entries at creation time
+//! (`RunSpec::extra_hosts`, populated from whichever services were already
+//! running when it started - i.e. its own transitive `depends_on`), and
+//! from then on `kiln_cli::commands::network::refresh_network_hosts`
+//! keeps every running container's `/etc/hosts` on the network in sync
+//! with everyone's *current* IP every time any one of them (re)starts -
+//! including a service that starts later without being declared as a
+//! `depends_on`, and a service whose IP changes on an individual restart
+//! rather than a fresh `kiln-compose up`. No embedded DNS resolver
+//! needed for either case.
 //!
 //! Cross-host (`node:`-tagged) services get the same treatment, with one
 //! real difference: since there's no overlay network between nodes'

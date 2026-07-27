@@ -152,6 +152,71 @@ pub fn attach_container(store: &Store, network: &str, container_id: &str, pid: i
     Ok(kilnd_core::network::attach_container(store.root(), network, container_id, pid)?)
 }
 
+/// `kiln-compose` names its containers `<project>_<service>` on its own
+/// implicit `<project>_default` network - strip that prefix back off so a
+/// hosts entry reads as the service name (`mysql`) rather than the full
+/// container name (`mysql_demo_mysql`). Falls back to the full container
+/// name for anything not on a `..._default` network, since a plain
+/// `kiln run --network` container has no such prefix to strip.
+fn service_hostname(container_name: &str, network: &str) -> String {
+    match network.strip_suffix("_default") {
+        Some(project) => {
+            let prefix = format!("{project}_");
+            container_name.strip_prefix(&prefix).unwrap_or(container_name).to_string()
+        }
+        None => container_name.to_string(),
+    }
+}
+
+/// Rewrites `/etc/hosts` for every *running* container on `network` so
+/// each one resolves every other member by service name at its current
+/// IP - not just the containers that happened to already be running when
+/// it was originally started (`kiln-compose`'s own `extra_hosts` is
+/// write-once, at creation time - see its module docs). Called every time
+/// a container's IP is (re)assigned, from `supervisor.rs`, so an
+/// individually-restarted container's new IP reaches every sibling on the
+/// network, not just the ones in its original compose group.
+///
+/// Idempotent by construction: this always rewrites the *entire* file
+/// from the current container list rather than appending, so calling it
+/// repeatedly with an unchanged member set produces byte-identical
+/// content - safe to call unconditionally on every start/restart, and
+/// harmless to any process on the other end since none of them keep a
+/// long-lived fd on `/etc/hosts` (name resolution always re-opens it).
+pub fn refresh_network_hosts(store: &Store, network: &str) {
+    use crate::container::{Container, Status};
+    use kiln_image::identity;
+
+    let members: Vec<(String, String)> = Container::list(store)
+        .into_iter()
+        .filter(|c| c.status == Status::Running && c.network.as_deref() == Some(network))
+        .filter_map(|c| c.ip.clone().map(|ip| (service_hostname(&c.name, network), ip)))
+        .collect();
+
+    for member in Container::list(store)
+        .into_iter()
+        .filter(|c| c.status == Status::Running && c.network.as_deref() == Some(network))
+    {
+        let own_hostname = service_hostname(&member.name, network);
+        let mut content = String::from("127.0.0.1\tlocalhost\n");
+        for (hostname, ip) in &members {
+            if hostname != &own_hostname {
+                content.push_str(&format!("{ip}\t{hostname}\n"));
+            }
+        }
+
+        let hosts_path = Container::upper_dir(store, &member.id).join("etc/hosts");
+        let Some(etc_dir) = hosts_path.parent() else { continue };
+        if std::fs::create_dir_all(etc_dir).is_err() {
+            continue;
+        }
+        let _ = super::chown(etc_dir, identity::SUBORDINATE_UID_BASE, identity::SUBORDINATE_GID_BASE);
+        if std::fs::write(&hosts_path, content).is_ok() {
+            let _ = super::chown(&hosts_path, identity::SUBORDINATE_UID_BASE, identity::SUBORDINATE_GID_BASE);
+        }
+    }
+}
+
 /// A parsed `-p`/`--publish` spec: `<host-port>:<container-port>[/tcp|udp]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortSpec {
