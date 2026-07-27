@@ -40,7 +40,7 @@ use compose::{ComposeFile, Healthcheck, Service};
 use kiln_cli::commands::network::{self, NetworkConfig};
 use kiln_cli::commands::run::{start, RunSpec};
 use kiln_cli::commands::volume;
-use kiln_cli::container::{Container, Status};
+use kiln_cli::container::{Container, HealthStatus, Status};
 use kiln_cli::error::{CliError, CliResult};
 use kiln_image::image::normalize_repository;
 use kiln_image::store::Store;
@@ -92,6 +92,14 @@ enum Command {
     /// noticed a node is down, e.g. via `kiln node ls`'s own reachability
     /// check.
     Reschedule(RescheduleArgs),
+    /// Deploy a new version of one service without a total-outage window
+    /// for its dependents: starts the new instance alongside the old one,
+    /// waits for it to be ready, only then switches every container's
+    /// `/etc/hosts` over to it and stops the old instance. Rolls back
+    /// automatically if the new instance never becomes ready. See
+    /// `cmd_update`'s own docs for exactly what this does and doesn't
+    /// cover.
+    Update(UpdateArgs),
 }
 
 #[derive(clap::Args)]
@@ -133,6 +141,16 @@ struct UpArgs {
     /// forever.
     #[arg(long, default_value_t = 120)]
     depends_on_timeout: u64,
+}
+
+#[derive(clap::Args)]
+struct UpdateArgs {
+    /// The service name, as it appears in kiln.yaml
+    service: String,
+    /// How long to wait for the new instance to become healthy before
+    /// giving up and rolling back to the old one
+    #[arg(long, default_value_t = 120)]
+    timeout: u64,
 }
 
 #[derive(clap::Args)]
@@ -202,6 +220,7 @@ fn main() {
         Command::Backup(args) => backup::backup(&store, &project, &cli.file, &compose, args.output),
         Command::Restore(_) => unreachable!("handled above"),
         Command::Reschedule(args) => cmd_reschedule(&store, &project, &context_dir, &compose, &args.service, &args.to),
+        Command::Update(args) => cmd_update(&store, &project, &context_dir, &compose, &args.service, args.timeout),
     };
 
     if let Err(e) = result {
@@ -431,6 +450,219 @@ fn cmd_reschedule(store: &Store, project: &str, context_dir: &Path, compose: &Co
 
     println!("Update kiln.yaml: change `node: {from_node_name}` to `node: {to_node_name}` for service {service:?} so this survives the next `kiln-compose up`.");
     Ok(())
+}
+
+/// Deploys a new version of `service` without a total-outage window for
+/// whatever else `depends_on: { condition: service_healthy }`s it, by
+/// keeping the old instance up until the new one has proven itself:
+///
+/// 1. Resolve/rebuild the image exactly as `up` would (pulling fresh for
+///    a plain `image:` service - `Image::resolve` never auto-pulls, so
+///    without this an "update" would silently redeploy the exact same
+///    bits; rebuilding for `build:`, which is already fresh-checked
+///    against the current Kilnfile/context via kiln's own layer cache).
+/// 2. Start it under a temporary name on the same network, *without*
+///    publishing its `ports:` yet - the old instance still holds those
+///    host ports, and two listeners can't share one.
+/// 3. Wait (bounded by `timeout`) for it to report healthy - or, for a
+///    service with no `healthcheck:` at all (which never leaves
+///    `Starting` - see `HealthStatus`'s own docs - so "wait for healthy"
+///    would just time out every time), a short settle window to catch an
+///    immediate crash-on-boot instead.
+/// 4. Only once ready: stop (and remove) the old instance, freeing its
+///    name and host ports; rename the new instance into that now-free
+///    name and immediately refresh every container's `/etc/hosts` on the
+///    network so the service name resolves to it - the step that
+///    actually ends dependents' brief gap, done before the (unrelated)
+///    port-forwarder setup for the new instance's own `ports:`.
+///
+/// What this does *not* do: true zero-downtime for `ports:`-published
+/// *host* traffic (there's a real, if brief, gap between the old
+/// instance's host port freeing up and the new instance's own forwarder
+/// re-binding it - unavoidable without SO_REUSEPORT-style tricks this
+/// project doesn't use), multi-instance load balancing, or anything
+/// beyond a single, local (non-`node:`) service. And it's the operator's
+/// own call whether a *stateful* service (one with `volumes:`) is even
+/// safe to run two instances of concurrently for the length of this
+/// overlap window - `update` warns but doesn't refuse.
+fn cmd_update(store: &Store, project: &str, context_dir: &Path, compose: &ComposeFile, service: &str, timeout_secs: u64) -> CliResult {
+    let Some(svc) = compose.services.get(service) else {
+        return Err(CliError::msg(format!("no such service: {service:?}")));
+    };
+    if svc.node.is_some() {
+        return Err(CliError::msg(format!(
+            "service {service:?} is `node:`-tagged - `update` only supports local services in this release; use `kiln-compose reschedule` to move it, or update kiln.yaml and re-run `up` on that node yourself"
+        )));
+    }
+    if !svc.volumes.is_empty() {
+        println!(
+            "note: {service:?} has volumes: - the old and new instances will briefly run side by side sharing them; make sure that's safe for this service before continuing (a database, for instance, usually isn't)"
+        );
+    }
+
+    let network_name = format!("{project}_default");
+    let container_name = format!("{project}_{service}");
+    let temp_name = format!("{container_name}__update");
+
+    // Clean up a leftover temp container from a previous `update` attempt
+    // that never finished (crashed, or was Ctrl-C'd mid-wait) - refuse
+    // rather than silently killing it if it's actually still running,
+    // since that would mean a *second* update is already in flight.
+    if let Some(mut leftover) = Container::resolve(store, &temp_name) {
+        leftover.refresh(store);
+        if leftover.status == Status::Running {
+            return Err(CliError::msg(format!(
+                "a previous `update` for {service:?} is still in progress (or was left running) - wait for it to finish, or `kiln rm -f {temp_name}` if you're sure it's stuck"
+            )));
+        }
+        let _ = kiln_cli::commands::rm::run(
+            store,
+            kiln_cli::commands::rm::Args {
+                containers: vec![leftover.id],
+                force: true,
+            },
+        );
+    }
+
+    let old = Container::resolve(store, &container_name);
+
+    let image = if svc.image.is_some() && svc.build.is_none() {
+        let reference = svc.image.as_deref().unwrap();
+        println!("  {service}: pulling {reference}...");
+        kiln_image::registry::pull(store, reference, false).map_err(|e| CliError::msg(format!("service {service:?}: pulling {reference}: {e}")))?;
+        reference.to_string()
+    } else {
+        resolve_service_image(store, project, context_dir, service, svc)?
+    };
+
+    let mut spec = RunSpec::new(image);
+    spec.command = svc.command.clone().map(|c| c.into_vec()).unwrap_or_default();
+    spec.name = Some(temp_name.clone());
+    spec.volumes = svc.volumes.clone();
+    // Deliberately no `spec.ports` yet - see this function's own docs.
+    spec.secrets = svc.secrets.clone();
+    spec.network = Some(network_name.clone());
+    spec.extra_env = svc.environment.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    spec.security = kilnd_core::security::SecurityProfile {
+        seccomp_unconfined: svc.security_opt.iter().any(|s| s == "seccomp:unconfined"),
+        cap_add: svc.cap_add.clone(),
+        cap_drop: svc.cap_drop.clone(),
+    };
+    spec.restart_policy = svc
+        .restart
+        .as_deref()
+        .map(kiln_cli::container::RestartPolicy::parse)
+        .transpose()
+        .map_err(CliError::msg)?
+        .unwrap_or_default();
+    spec.healthcheck = svc.healthcheck.clone().map(Healthcheck::into_spec).transpose().map_err(CliError::msg)?;
+    if let Some(resources) = &svc.resources {
+        let parsed = resources.parse().map_err(|e| CliError::msg(format!("service {service:?}: {e}")))?;
+        spec.cpu_limit = parsed.cpu_limit;
+        spec.memory_limit_bytes = parsed.memory_limit_bytes;
+        spec.memory_swap_bytes = parsed.memory_swap_bytes;
+    }
+
+    println!("Starting new instance of {service}...");
+    let new_container = start(store, spec, None).map_err(|e| CliError::msg(format!("service {service:?}: starting new instance: {e}")))?;
+
+    println!("  {service}: {} - waiting for it to be ready...", &new_container.id[..12]);
+    if let Err(reason) = wait_for_new_instance_ready(store, &new_container.id, svc.healthcheck.is_some(), timeout_secs) {
+        println!("  {service}: new instance not ready ({reason}) - rolling back, old instance left running");
+        let _ = kiln_cli::commands::rm::run(
+            store,
+            kiln_cli::commands::rm::Args {
+                containers: vec![new_container.id],
+                force: true,
+            },
+        );
+        return Err(CliError::msg(format!("update aborted for {service:?}: {reason}")));
+    }
+    println!("  {service}: new instance ready");
+
+    if let Some(old) = old {
+        println!("  {service}: stopping old instance {}...", &old.id[..12.min(old.id.len())]);
+        kiln_cli::commands::stop::stop_container(store, &old.id).map_err(|e| CliError::msg(format!("stopping old instance: {e}")))?;
+        let _ = kiln_cli::commands::rm::run(
+            store,
+            kiln_cli::commands::rm::Args {
+                containers: vec![old.id],
+                force: true,
+            },
+        );
+    }
+
+    // Promote: the container itself never restarts (its process, pid,
+    // and IP are untouched), only the store's own name field changes - so
+    // this is instant and carries no risk of the new instance's own
+    // healthy state regressing. Its in-container hostname (set once, at
+    // `clone()`/spawn time) keeps reading as `<service>__update` - purely
+    // cosmetic, and not worth a real restart (which would defeat the
+    // point of this whole exercise) to fix.
+    let mut promoted = new_container;
+    promoted.name = container_name.clone();
+    promoted.save(store).map_err(|e| CliError::msg(format!("promoting new instance: {e}")))?;
+
+    // Refresh every dependent's `/etc/hosts` *before* touching ports -
+    // this is the one step that actually ends the old instance's brief
+    // absence for anything reaching `service` by name (the whole reason
+    // `update` exists), so it happens as soon as it safely can: right
+    // after promotion, not after the (unrelated) port-forwarder setup
+    // below. The old instance's own name is already gone from the store
+    // by now (removed above, once actually stopped), so there's no
+    // ambiguity between it and the newly-promoted container.
+    network::refresh_network_hosts(store, &network_name);
+
+    for port_str in &svc.ports {
+        let port = network::PortSpec::parse(port_str).map_err(CliError::msg)?;
+        let ip = promoted
+            .ip
+            .clone()
+            .ok_or_else(|| CliError::msg("new instance has no ip to publish ports against"))?;
+        network::spawn_port_forwarder(&port, ip)?;
+    }
+
+    println!("updated {service}: now running as {}", &promoted.id[..12.min(promoted.id.len())]);
+    Ok(())
+}
+
+/// Waits for a freshly-started container to prove itself ready to take
+/// over from whatever it's replacing.
+fn wait_for_new_instance_ready(store: &Store, container_id: &str, has_healthcheck: bool, timeout_secs: u64) -> Result<(), String> {
+    if !has_healthcheck {
+        // No probe ever transitions this container's `health` out of
+        // `Starting` (see `HealthStatus`'s own docs) - waiting out
+        // `timeout_secs` for a state that can structurally never arrive
+        // would just make every update on a service with no healthcheck
+        // fail after a long wait. A short settle window, checking it's
+        // still actually running, is the best available signal instead.
+        std::thread::sleep(Duration::from_secs(2));
+        let mut c = Container::load(store, container_id).ok_or_else(|| "container disappeared".to_string())?;
+        c.refresh(store);
+        return if c.status == Status::Running {
+            Ok(())
+        } else {
+            Err("exited immediately after starting (no healthcheck configured, so this is the best signal available)".to_string())
+        };
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let mut c = Container::load(store, container_id).ok_or_else(|| "container disappeared".to_string())?;
+        c.refresh(store);
+        match c.health {
+            HealthStatus::Healthy => return Ok(()),
+            HealthStatus::Unhealthy => return Err("reported unhealthy".to_string()),
+            HealthStatus::Starting => {}
+        }
+        if c.status != Status::Running {
+            return Err("exited before becoming healthy".to_string());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out after {timeout_secs}s waiting to become healthy"));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 fn compose_waiting_dir(store: &Store) -> PathBuf {
