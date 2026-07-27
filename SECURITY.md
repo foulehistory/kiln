@@ -270,6 +270,19 @@ host-observed capability bounding set read live from
 (`GET /containers/:id/security`) and shown as a compact indicator in the
 dashboard's container detail view.
 
+## `GET /metrics` — same trust boundary as every other `kilnd` endpoint
+
+A Prometheus-format rendering of the per-container CPU/memory/network/
+health data `kiln inspect --resources` and `GET /containers/:id/resources`
+already expose - no new data collection, and no new authentication
+requirement of its own: reachable under exactly the same conditions as
+every other endpoint here (loopback-only by default; the same
+`Authorization: Bearer` token as everything else once remote mode is
+on - see "Remote `kilnd`" below). A Prometheus server configured to
+scrape this over the remote port needs that token configured as its own
+scrape job's `bearer_token`, the same way any other remote API client
+would authenticate.
+
 ## Resource limits (cgroups v2) — implemented
 
 `--memory`/`--cpus`/`--memory-swap` (`kiln run`) and a `resources:` block

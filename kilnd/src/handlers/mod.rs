@@ -80,6 +80,7 @@ pub fn route(store: &Store, req: &Request, stream: &mut Conn, reader: &mut BufRe
         ("GET", ["nodes"]) => nodes::list(store).write_to(stream),
         ("GET", ["disk-usage"]) => system::disk_usage(store).write_to(stream),
         ("POST", ["gc"]) => system::gc(store).write_to(stream),
+        ("GET", ["metrics"]) => system::metrics(store).write_to(stream),
         _ => Response::text(404, "not found").write_to(stream),
     }
 }
