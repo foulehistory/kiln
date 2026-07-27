@@ -275,6 +275,29 @@ impl Container {
             if !alive {
                 self.status = Status::Exited(-1);
                 let _ = self.save(store);
+                // The one case a fake exit code alone doesn't explain -
+                // this container's own log (whatever it wrote before
+                // disappearing) has nothing about *why* it stopped,
+                // because nothing here ever saw it exit; the most common
+                // real cause is the whole host/WSL VM having gone down
+                // and back up (every process, this one included, is
+                // just gone - see this function's own doc comment).
+                // Written to the log itself (not just stderr) so `kiln
+                // logs`/the dashboard's log panel - the two places
+                // someone actually goes looking to answer "what
+                // happened?" - shows it, not just this function's own
+                // (rare) direct callers.
+                if let Ok(mut log) = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(Self::log_path(store, &self.id))
+                {
+                    use std::io::Write;
+                    let _ = writeln!(
+                        log,
+                        "kiln: this container's process is gone but was never observed to exit cleanly (no exit code recorded, hence exited(-1)) - most likely the host or WSL was restarted while it was running, not something the container's own command did. Start it again to resume."
+                    );
+                }
             }
         }
     }
