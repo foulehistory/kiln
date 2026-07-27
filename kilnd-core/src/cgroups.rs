@@ -30,9 +30,11 @@
 //! unprivileged user is a separate concern left to the caller.
 
 use crate::error::{self, Result};
+use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Controllers Kiln enables for every container: CPU time, memory, block/IO
 /// bandwidth, and process count (a cheap fork-bomb guard).
@@ -143,7 +145,25 @@ impl CgroupV2 {
     pub fn create(parent: &Path, id: &str, limits: &Limits) -> Result<Self> {
         let dir = parent.join(id);
         if dir.is_dir() {
-            fs::remove_dir(&dir).map_err(error::io(&dir))?;
+            if let Err(e) = fs::remove_dir(&dir) {
+                // A leftover cgroup from a clean `stop` normally has no
+                // member processes left (the container's own process
+                // already exited before `stop` returned) - but one left by
+                // a *start attempt that was itself interrupted* (kilnd/kiln
+                // killed mid-launch, e.g. a host/VM restart) can still have
+                // some registered. cgroupfs refuses `rmdir` on that (EBUSY,
+                // not ENOTEMPTY, even though the directory has no
+                // subdirectories of its own) - self-heal by reaping
+                // whatever's still there and retrying once, rather than
+                // surfacing that as a raw, unexplained container-start
+                // failure the caller has no way to recover from on its own.
+                if e.raw_os_error() == Some(libc::EBUSY) {
+                    reap_orphaned_members(&dir);
+                    fs::remove_dir(&dir).map_err(error::io(&dir))?;
+                } else {
+                    return Err(error::io(&dir)(e));
+                }
+            }
         }
         fs::create_dir(&dir).map_err(error::io(&dir))?;
         let cgroup = CgroupV2 { dir };
@@ -212,10 +232,21 @@ impl CgroupV2 {
         write_file(&self.dir.join("cgroup.procs"), pid.to_string())
     }
 
-    /// Current PIDs in this cgroup.
+    /// Current PIDs in this cgroup. Filters to strictly positive values -
+    /// a real `cgroup.procs` never legitimately contains `0` (`kill(2)`
+    /// gives that pid a special, dangerous meaning: signal every process
+    /// in the *caller's own* process group, not "no such process") - seen
+    /// in practice on at least one WSL2 host, where a handful of stale
+    /// leftover cgroup directories read back a literal `"0"` line instead
+    /// of coming back empty.
     pub fn processes(&self) -> Result<Vec<Pid>> {
         let contents = read_file(&self.dir.join("cgroup.procs"))?;
-        Ok(contents.lines().filter_map(|l| l.trim().parse::<i32>().ok()).map(Pid::from_raw).collect())
+        Ok(contents
+            .lines()
+            .filter_map(|l| l.trim().parse::<i32>().ok())
+            .filter(|&pid| pid > 0)
+            .map(Pid::from_raw)
+            .collect())
     }
 
     pub fn memory_current(&self) -> Result<u64> {
@@ -250,4 +281,36 @@ impl CgroupV2 {
     pub fn remove(self) -> Result<()> {
         fs::remove_dir(&self.dir).map_err(error::io(&self.dir))
     }
+}
+
+/// Processes still listed in `dir`'s `cgroup.procs` - see
+/// `CgroupV2::processes`'s own docs on why this filters to strictly
+/// positive pids. Returns an empty list (rather than an error) if the
+/// directory or file doesn't exist - both are the normal case for a
+/// cgroup nothing is currently wrong with.
+fn orphaned_members(dir: &Path) -> Vec<Pid> {
+    CgroupV2::from_existing(dir.to_path_buf()).processes().unwrap_or_default()
+}
+
+/// SIGKILLs every process still listed in `dir`'s `cgroup.procs` - left
+/// there by a `start` that was itself interrupted before the container
+/// either exited on its own or went through `stop`'s own reaping - and
+/// waits (bounded) for the kernel to actually drop them from the cgroup.
+/// `cgroup.procs` reflects live membership only, so an empty read-back is
+/// the authoritative "safe to `rmdir` now" signal, not a fixed sleep.
+/// Returns the pids it found (and killed), for a caller that wants to
+/// report what it cleaned up (`create`'s own self-heal on `EBUSY`, and
+/// `kiln doctor`'s explicit diagnostic pass).
+pub fn reap_orphaned_members(dir: &Path) -> Vec<Pid> {
+    let pids = orphaned_members(dir);
+    for pid in &pids {
+        let _ = kill(*pid, Signal::SIGKILL);
+    }
+    if !pids.is_empty() {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !orphaned_members(dir).is_empty() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    pids
 }

@@ -298,6 +298,37 @@ dashboard's container detail view as a limit/usage bar) reports
 configured limits against live cgroup usage - the same visibility
 precedent as `--security` above.
 
+## `kiln doctor` — kills processes it decides are orphaned
+
+`kiln doctor [--fix]` scans every cgroup under `/sys/fs/cgroup/kiln/` for
+member processes left behind by a `start` interrupted before the
+container either exited on its own or went through `stop`'s own reaping
+(a host/VM restart being the most common real cause). With `--fix`, it
+`SIGKILL`s whatever it finds there. Two things bound the blast radius of
+that:
+
+- It can only ever act on processes kiln itself put into one of its own
+  cgroups (`CgroupV2::add_process`) - there's no way to point it at an
+  arbitrary host pid.
+- A cgroup younger than a few seconds is skipped entirely
+  (`MIN_AGE_BEFORE_FLAGGING`), specifically so a system-wide sweep can't
+  race a *different* container that's still legitimately mid-start
+  elsewhere (its own cgroup exists well before its `Running` status is
+  persisted - see `commands::run::start`'s ordering) and kill a perfectly
+  healthy one.
+
+Separately, `CgroupV2::processes`/`reap_orphaned_members` filter to
+strictly positive pids: `cgroup.procs` should never contain `0`, but
+`kill(2)` gives pid `0` a special, dangerous meaning (signal every
+process in the *caller's own* process group) rather than "no such
+process" - a real, if narrow, hazard found on at least one WSL2 host
+during this feature's own testing (a handful of stale cgroups read back
+a literal `"0"` line instead of coming back empty).
+
+`kiln doctor` needs the same root/cgroup-delegation access every other
+`kiln` command already has - it adds no new privilege, only a new way to
+use the one it already had.
+
 ## Secrets — AES-256-GCM at rest, opt-in rotation
 
 `kiln secret create`/`kiln.yaml`'s `secrets:` encrypt a value with a

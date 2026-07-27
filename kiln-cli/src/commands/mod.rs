@@ -1,5 +1,6 @@
 pub mod build;
 pub mod cp;
+pub mod doctor;
 pub mod exec;
 pub mod gc;
 pub mod image;

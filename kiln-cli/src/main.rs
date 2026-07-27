@@ -78,6 +78,10 @@ enum Command {
     /// Manage remote nodes for kiln-compose's multi-host `node:` dispatch
     #[command(subcommand)]
     Node(commands::node::Command),
+    /// Find (and, with --fix, clean up) orphaned cgroup processes left by
+    /// an interrupted `start` - the thing that otherwise surfaces later as
+    /// a raw EBUSY on the next start/restart attempt
+    Doctor(commands::doctor::Args),
 }
 
 fn main() {
@@ -116,6 +120,7 @@ fn main() {
         Command::Secret(cmd) => commands::secret::run(&store, cmd),
         Command::Image(cmd) => commands::image::run(&store, cmd),
         Command::Node(cmd) => commands::node::run(&store, cmd),
+        Command::Doctor(args) => commands::doctor::run(&store, args),
     };
 
     if let Err(e) = result {
