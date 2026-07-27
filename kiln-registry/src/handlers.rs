@@ -19,7 +19,15 @@
 //! anonymously. See `SECURITY.md` for why this is a real, deliberate
 //! widening of what "authenticated" means here, not an incidental
 //! side effect.
+//!
+//! # Audit log
+//!
+//! Every resource-level request (blob/manifest/signature/scan-report
+//! read or write, plus a role-based refusal at `/token` itself) appends
+//! one line to `crate::audit` - account, action, resource, and whether
+//! it was allowed. `kiln-registry audit` reads it back.
 
+use crate::audit;
 use crate::auth::{self, TokenStore};
 use crate::store::{RegistryStore, Role, User};
 use crate::tls::RegistryStream;
@@ -74,7 +82,7 @@ fn dispatch(store: &RegistryStore, tokens: &TokenStore, req: &Request, repositor
     match (req.method.as_str(), op) {
         ("HEAD", ["blobs", digest]) => head_blob(tokens, req, store, repository, digest),
         ("GET", ["blobs", digest]) => get_blob(tokens, req, store, repository, digest),
-        ("POST", ["blobs", "uploads"]) => start_upload(tokens, req, repository),
+        ("POST", ["blobs", "uploads"]) => start_upload(store, tokens, req, repository),
         ("PUT", ["blobs", "uploads", _id]) => complete_upload(store, tokens, req, repository),
         ("PUT", ["manifests", tag]) => put_manifest(store, tokens, req, repository, tag),
         ("GET", ["manifests", tag]) => get_manifest(tokens, req, store, repository, tag),
@@ -130,15 +138,17 @@ fn token_endpoint(store: &RegistryStore, tokens: &TokenStore, req: &Request) -> 
 
     if actions.iter().any(|a| a == "push") {
         if user.role == Role::Pull {
+            audit::log(store, &user.username, "push", &repository, false);
             return Response::text(403, format!("{} has pull-only access and may not push", user.username));
         }
         let owner = repository.split('/').next().unwrap_or("");
         if owner != user.username && user.role != Role::Admin {
+            audit::log(store, &user.username, "push", &repository, false);
             return Response::text(403, format!("{} may not push to {repository}", user.username));
         }
     }
 
-    let token = tokens.issue(repository, actions);
+    let token = tokens.issue(user.username.clone(), repository, actions);
     Response::json(200, &TokenResponse { token })
 }
 
@@ -201,9 +211,44 @@ fn bearer_token(req: &Request) -> Option<&str> {
     req.headers.get("authorization")?.strip_prefix("Bearer ")
 }
 
+/// Checks a bearer token's scope for `repository`/`action` and appends
+/// exactly one line to the audit log either way (allowed or refused) -
+/// see `crate::audit`'s own docs. Every repository-scoped handler below
+/// goes through this rather than calling `tokens.validate` directly, so
+/// there's one place that can't accidentally skip logging a request. The
+/// account recorded is whichever one the token (if any) was issued to,
+/// not just "authenticated or not" - `username_for` resolves that
+/// without requiring the caller to have looked it up separately.
+fn authorize(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str, resource: &str, action: &str) -> Result<(), Response> {
+    let token = bearer_token(req);
+    let allowed = token.is_some_and(|t| tokens.validate(t, repository, action));
+    let username = token.and_then(|t| tokens.username_for(t)).unwrap_or_else(|| "-".to_string());
+    audit::log(store, &username, action, resource, allowed);
+    if allowed {
+        Ok(())
+    } else {
+        Err(Response::text(401, format!("{action} token required")))
+    }
+}
+
+/// Same as [`authorize`], but for `GET /users/:username/pubkey` - see
+/// `get_pubkey`'s own docs on why that needs `validate_for_owner` instead
+/// of a repository-exact check.
+fn authorize_for_owner(store: &RegistryStore, tokens: &TokenStore, req: &Request, owner: &str, resource: &str, action: &str) -> Result<(), Response> {
+    let token = bearer_token(req);
+    let allowed = token.is_some_and(|t| tokens.validate_for_owner(t, owner, action));
+    let username = token.and_then(|t| tokens.username_for(t)).unwrap_or_else(|| "-".to_string());
+    audit::log(store, &username, action, resource, allowed);
+    if allowed {
+        Ok(())
+    } else {
+        Err(Response::text(401, format!("{action} token required")))
+    }
+}
+
 fn head_blob(tokens: &TokenStore, req: &Request, store: &RegistryStore, repository: &str, digest: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "pull")) {
-        return Response::text(401, "pull token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}@{digest}"), "pull") {
+        return resp;
     }
     if store.blob_exists(digest) {
         Response {
@@ -217,8 +262,8 @@ fn head_blob(tokens: &TokenStore, req: &Request, store: &RegistryStore, reposito
 }
 
 fn get_blob(tokens: &TokenStore, req: &Request, store: &RegistryStore, repository: &str, digest: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "pull")) {
-        return Response::text(401, "pull token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}@{digest}"), "pull") {
+        return resp;
     }
     match store.blob_path(digest).and_then(|p| crate::store::read_file(&p)) {
         Some(bytes) => Response {
@@ -236,9 +281,9 @@ fn get_blob(tokens: &TokenStore, req: &Request, store: &RegistryStore, repositor
 /// token again, so there's nothing this step needs to remember. The
 /// upload id in the URL exists only to satisfy clients that expect one;
 /// it's never looked up server-side.
-fn start_upload(tokens: &TokenStore, req: &Request, repository: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
-        return Response::text(401, "push token required");
+fn start_upload(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str) -> Response {
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}@(upload)"), "push") {
+        return resp;
     }
     let id = random_id();
     Response {
@@ -249,12 +294,12 @@ fn start_upload(tokens: &TokenStore, req: &Request, repository: &str) -> Respons
 }
 
 fn complete_upload(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
-        return Response::text(401, "push token required");
-    }
     let Some(digest) = req.query.get("digest") else {
         return Response::text(400, "missing digest query param");
     };
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}@{digest}"), "push") {
+        return resp;
+    }
     let actual = format!("sha256:{}", hex::encode(Sha256::digest(&req.body)));
     if &actual != digest {
         return Response::text(400, format!("digest mismatch: expected {digest}, got {actual}"));
@@ -271,8 +316,8 @@ fn complete_upload(store: &RegistryStore, tokens: &TokenStore, req: &Request, re
 }
 
 fn put_manifest(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str, tag: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
-        return Response::text(401, "push token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}:{tag}"), "push") {
+        return resp;
     }
     match store.write_manifest(repository, tag, &req.body) {
         Some(Ok(())) => Response {
@@ -288,8 +333,8 @@ fn put_manifest(store: &RegistryStore, tokens: &TokenStore, req: &Request, repos
 /// Only tag-addressed lookups are supported - see `RegistryStore::manifest_path`'s
 /// own doc comment for why that's enough for what this server is for.
 fn get_manifest(tokens: &TokenStore, req: &Request, store: &RegistryStore, repository: &str, tag: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "pull")) {
-        return Response::text(401, "pull token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}:{tag}"), "pull") {
+        return resp;
     }
     match store.manifest_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
         Some(bytes) => Response {
@@ -302,8 +347,8 @@ fn get_manifest(tokens: &TokenStore, req: &Request, store: &RegistryStore, repos
 }
 
 fn put_signature(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str, tag: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
-        return Response::text(401, "push token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}:{tag} (signature)"), "push") {
+        return resp;
     }
     match store.write_signature(repository, tag, &req.body) {
         Some(Ok(())) => Response {
@@ -317,8 +362,8 @@ fn put_signature(store: &RegistryStore, tokens: &TokenStore, req: &Request, repo
 }
 
 fn get_signature(tokens: &TokenStore, req: &Request, store: &RegistryStore, repository: &str, tag: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "pull")) {
-        return Response::text(401, "pull token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}:{tag} (signature)"), "pull") {
+        return resp;
     }
     match store.signature_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
         Some(bytes) => Response {
@@ -331,8 +376,8 @@ fn get_signature(tokens: &TokenStore, req: &Request, store: &RegistryStore, repo
 }
 
 fn put_scan_report(store: &RegistryStore, tokens: &TokenStore, req: &Request, repository: &str, tag: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "push")) {
-        return Response::text(401, "push token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}:{tag} (scan-report)"), "push") {
+        return resp;
     }
     match store.write_scan_report(repository, tag, &req.body) {
         Some(Ok(())) => Response {
@@ -346,8 +391,8 @@ fn put_scan_report(store: &RegistryStore, tokens: &TokenStore, req: &Request, re
 }
 
 fn get_scan_report(tokens: &TokenStore, req: &Request, store: &RegistryStore, repository: &str, tag: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate(t, repository, "pull")) {
-        return Response::text(401, "pull token required");
+    if let Err(resp) = authorize(store, tokens, req, repository, &format!("{repository}:{tag} (scan-report)"), "pull") {
+        return resp;
     }
     match store.scan_report_path(repository, tag).and_then(|p| crate::store::read_file(&p)) {
         Some(bytes) => Response {
@@ -373,8 +418,8 @@ struct PubkeyResponse {
 /// (its one pull-scoped token for the repository being pulled, reused as
 /// the Bearer header here too).
 fn get_pubkey(tokens: &TokenStore, store: &RegistryStore, req: &Request, username: &str) -> Response {
-    if !bearer_token(req).is_some_and(|t| tokens.validate_for_owner(t, username, "pull")) {
-        return Response::text(401, "pull token required");
+    if let Err(resp) = authorize_for_owner(store, tokens, req, username, &format!("{username} (pubkey)"), "pull") {
+        return resp;
     }
     match store.find_user(username).and_then(|u| u.public_key) {
         Some(public_key) => Response::json(200, &PubkeyResponse { public_key }),

@@ -65,6 +65,11 @@ impl RegistryStore {
         self.data_dir.join("users.json")
     }
 
+    /// Append-only audit log path - see `crate::audit`'s own docs.
+    pub fn audit_log_path(&self) -> PathBuf {
+        self.data_dir.join("audit.log")
+    }
+
     pub fn load_users(&self) -> Vec<User> {
         std::fs::read(self.users_path())
             .ok()

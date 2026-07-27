@@ -218,6 +218,20 @@ username's namespace, which is exactly the one token the existing pull
 client already reuses for this lookup, so no client-side changes were
 needed to keep signature verification working under the new gate.
 
+## `kiln-registry` — audit log (append-only, plaintext)
+
+Every resource-level request (blob/manifest/signature/scan-report read
+or write) and every role-based refusal at `/token` appends one JSON line
+to `<data-dir>/audit.log`: timestamp, account, action, resource, and
+whether it was allowed - never a password or bearer token, only the
+account a token had already been resolved to. `kiln-registry audit`
+reads it back; there's no separate access control on the file itself
+beyond whatever already protects `<data-dir>` (the same trust boundary
+`users.json`'s password hashes already sit behind). It's append-only
+with no rotation or size cap - an operator running a long-lived registry
+under sustained traffic should rotate it externally (`logrotate` or
+equivalent) the same way they would any other unbounded append-only log.
+
 ## `kiln-registry` — native TLS (opt-in)
 
 `kiln-registry serve --tls-cert <path> --tls-key <path>` (or

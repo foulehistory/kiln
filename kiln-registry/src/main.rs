@@ -12,6 +12,7 @@
 //! `kiln-image`'s client defaults to HTTPS for any host that isn't
 //! `localhost`/`127.0.0.1`.
 
+mod audit;
 mod auth;
 mod gc;
 mod handlers;
@@ -66,6 +67,21 @@ enum Command {
         /// Report what would be removed without deleting anything
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Show the append-only log of every push/pull/admin action this
+    /// registry has authorized or refused - never credentials themselves,
+    /// only the account a request's token had already been resolved to
+    #[command(name = "audit")]
+    Audit {
+        /// Only entries for this account
+        #[arg(long)]
+        user: Option<String>,
+        /// Only entries for this action (pull/push)
+        #[arg(long)]
+        action: Option<String>,
+        /// Only refused requests
+        #[arg(long)]
+        denied_only: bool,
     },
 }
 
@@ -187,6 +203,24 @@ fn main() {
                 if summary.blobs_removed == 1 { "" } else { "s" },
                 format_bytes(summary.bytes_freed),
             );
+        }
+        Some(Command::Audit { user, action, denied_only }) => {
+            let entries = audit::read_all(&store)
+                .into_iter()
+                .filter(|e| user.as_deref().map(|u| e.username == u).unwrap_or(true))
+                .filter(|e| action.as_deref().map(|a| e.action == a).unwrap_or(true))
+                .filter(|e| !denied_only || !e.allowed);
+            println!("{:<12}{:<16}{:<8}{:<10}RESOURCE", "TIME", "USER", "ACTION", "RESULT");
+            for e in entries {
+                println!(
+                    "{:<12}{:<16}{:<8}{:<10}{}",
+                    e.ts,
+                    e.username,
+                    e.action,
+                    if e.allowed { "allowed" } else { "denied" },
+                    e.resource,
+                );
+            }
         }
     }
 }

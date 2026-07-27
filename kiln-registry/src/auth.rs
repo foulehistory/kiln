@@ -35,6 +35,7 @@ fn random_token() -> String {
 }
 
 struct Claims {
+    username: String,
     repository: String,
     actions: Vec<String>,
     expires_at: SystemTime,
@@ -59,15 +60,26 @@ impl TokenStore {
         }
     }
 
-    pub fn issue(&self, repository: String, actions: Vec<String>) -> String {
+    pub fn issue(&self, username: String, repository: String, actions: Vec<String>) -> String {
         let token = random_token();
         let claims = Claims {
+            username,
             repository,
             actions,
             expires_at: SystemTime::now() + TOKEN_TTL,
         };
         self.tokens.lock().expect("token store mutex poisoned").insert(token.clone(), claims);
         token
+    }
+
+    /// The account a (still-valid) token was issued to - `kiln-registry
+    /// audit`'s only reason to exist is recording *who* did something, so
+    /// every resource-level handler looks this up right alongside its own
+    /// `validate` call (see `handlers::authorize`). `None` for an unknown
+    /// or expired token, same as `validate` would report.
+    pub fn username_for(&self, token: &str) -> Option<String> {
+        let tokens = self.tokens.lock().expect("token store mutex poisoned");
+        tokens.get(token).filter(|c| c.expires_at > SystemTime::now()).map(|c| c.username.clone())
     }
 
     /// `true` iff `token` is known, unexpired, and was granted `action`
